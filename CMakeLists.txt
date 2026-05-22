@@ -10,8 +10,10 @@ if (NOT DEFINED CONTENT_SIM_BUILD_TESTS)
     option(CONTENT_SIM_BUILD_TESTS "Build content-sim unit tests" ON)
 endif ()
 
-set(CONTENT_SIM_HIGHWAYHASH_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/highwayhash"
-    CACHE PATH "Path to a HighwayHash checkout containing c/highwayhash.c")
+if (NOT DEFINED CONTENT_SIM_HIGHWAYHASH_ROOT)
+    set(CONTENT_SIM_HIGHWAYHASH_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/highwayhash"
+        CACHE PATH "Path to a HighwayHash checkout containing c/highwayhash.c")
+endif ()
 
 set(_content_sim_highwayhash_c "${CONTENT_SIM_HIGHWAYHASH_ROOT}/c/highwayhash.c")
 set(_content_sim_highwayhash_h "${CONTENT_SIM_HIGHWAYHASH_ROOT}/c/highwayhash.h")
