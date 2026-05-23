@@ -14,7 +14,10 @@ namespace {
 
 constexpr size_t kMinUsefulBytes = 64;
 constexpr size_t kActiveWinnowingWindow = 12;
-constexpr std::array<size_t, 3> kActiveBuzHashWindows = {32, 96, 192};
+constexpr size_t kWinnowWindowSize = 64;
+constexpr size_t kWinnowRows = SSDF_MINHASH_VALUES / 2;
+constexpr uint64_t kCdcGateMask = 127;
+constexpr std::array<size_t, 4> kActiveBuzHashWindows = {32, 64, 96, 192};
 constexpr size_t kMinHashValues = SSDF_MINHASH_VALUES;
 constexpr uint64_t kFeatureSalt = 0x7a09e667f3bcc909ULL;
 constexpr uint64_t kMinHashSeed = 0x243f6a8885a308d3ULL;
@@ -239,7 +242,17 @@ void Hasher::observe_complete_window(RollingState& scale) {
     ++scale.feature_index;
 
     ++stats_.rolling_windows;
-    const auto feature_hash = detail::Mix64(scale.rolling_hash ^ scale.scale_salt);
+    const auto raw_feature = scale.rolling_hash ^ scale.scale_salt;
+
+    if ( scale.window_size != kWinnowWindowSize ) {
+        if ( (raw_feature & kCdcGateMask) == 0 )
+            select_feature_range(detail::Mix64(raw_feature), kWinnowRows, minhash_values_.size(),
+                                 has_last_cdc_feature_, last_cdc_feature_);
+
+        return;
+    }
+
+    const auto feature_hash = detail::Mix64(raw_feature);
 
     while ( scale.winnow_size != 0 &&
             scale.winnow_queue[scale.winnow_begin].index + kActiveWinnowingWindow <= feature_index ) {
@@ -268,22 +281,23 @@ void Hasher::observe_complete_window(RollingState& scale) {
 
     scale.has_last_selected_index = true;
     scale.last_selected_index = minimizer.index;
-    select_feature(minimizer.value);
+    select_feature_range(minimizer.value, 0, kWinnowRows, has_last_winnow_feature_, last_winnow_feature_);
 }
 
-void Hasher::select_feature(uint64_t feature_hash) {
+void Hasher::select_feature_range(uint64_t feature_hash, size_t row_begin, size_t row_end, bool& has_last,
+                                  uint64_t& last) {
     ++stats_.selected_features;
 
-    if ( has_last_minhash_feature_ && last_minhash_feature_ == feature_hash )
+    if ( has_last && last == feature_hash )
         return;
 
-    has_last_minhash_feature_ = true;
-    last_minhash_feature_ = feature_hash;
+    has_last = true;
+    last = feature_hash;
     ++stats_.minhash_updates;
 
-    auto* value = minhash_values_.data();
-    const auto* seed = kMinHashRowSeeds.data();
-    const auto* const end = value + minhash_values_.size();
+    auto* value = minhash_values_.data() + row_begin;
+    const auto* seed = kMinHashRowSeeds.data() + row_begin;
+    const auto* const end = minhash_values_.data() + row_end;
 
     for ( ; value != end; ++value, ++seed ) {
         const auto candidate = detail::Mix64(feature_hash ^ *seed);
@@ -315,6 +329,11 @@ std::optional<std::array<uint64_t, SSDF_MINHASH_VALUES>> Hasher::minhash_signatu
         return std::nullopt;
 
     if ( stats_.minhash_updates < kMinUsefulSelectedFeatures )
+        return std::nullopt;
+
+    const auto empty = std::numeric_limits<uint64_t>::max();
+    if ( std::any_of(minhash_values_.begin(), minhash_values_.end(),
+                     [empty](uint64_t value) { return value == empty; }) )
         return std::nullopt;
 
     return minhash_values_;

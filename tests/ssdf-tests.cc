@@ -133,7 +133,7 @@ void TestOutputFormat() {
     auto result = HashWithChunk(data, 4096);
     REQUIRE(result);
 
-    CHECK(SSDF_MINHASH18X24_ALG == "mh-buz32-96-192-w12-k24-h18-hh64-b64url");
+    CHECK(SSDF_MINHASH18X24_ALG == "mh-rs-w64-cdc32-96-192-p128-k24-h18-hh64-b64url");
     CHECK(result->size() == SSDF_MINHASH18X24_VALUES * 3 + (SSDF_MINHASH18X24_VALUES - 1));
     CheckTokenSeparators(*result, SSDF_MINHASH18X24_VALUES);
 

@@ -4,7 +4,7 @@ This directory contains a standalone prototype for the file-content similarity
 value emitted by the Zeek analyzer:
 
 ```text
-content_sim_alg=mh-buz32-96-192-w12-k24-h18-hh64-b64url
+content_sim_alg=mh-rs-w64-cdc32-96-192-p128-k24-h18-hh64-b64url
 content_sim=<24 colon-separated 3-character base64url tokens>
 ```
 
@@ -16,10 +16,13 @@ features.
 
 The streaming hasher:
 
-1. Maintains 32-byte, 96-byte, and 192-byte rolling buzhash windows.
-2. Applies a splitmix64-style avalanche to each rolling hash.
-3. Selects features through winnowing with a 12-feature minimizer window.
-4. Updates a 24-row MinHash signature from each selected feature.
+1. Maintains 32-byte, 64-byte, 96-byte, and 192-byte rolling buzhash windows.
+2. Uses a row-split MinHash signature: rows 0-11 use 64-byte winnowed
+   minimizers and rows 12-23 use sparse content-defined samples from the
+   32-byte, 96-byte, and 192-byte lanes.
+3. Selects the winnowed lane with a 12-feature minimizer window.
+4. Selects the sparse CDC lanes when the raw rolling feature passes a 1/128
+   gate, then applies a splitmix64-style avalanche before MinHash.
 5. Emits the MinHash rows as row-scoped 18-bit tokens.
 6. Mixes the algorithm id, row index, and MinHash row value with HighwayHash
    and a fixed public algorithm key.
@@ -55,7 +58,7 @@ build/ssdf --benchmark [FILE ...]
 `ssdf FILE` prints:
 
 ```text
-mh-buz32-96-192-w12-k24-h18-hh64-b64url <content_sim>
+mh-rs-w64-cdc32-96-192-p128-k24-h18-hh64-b64url <content_sim>
 ```
 
 `--minhash18x24` and `--minhash18x24-compare` are aliases for the current
@@ -91,7 +94,7 @@ The `base/files/content-sim` script extends `Files::Info` with
 emits:
 
 ```text
-content_sim_alg=mh-buz32-96-192-w12-k24-h18-hh64-b64url
+content_sim_alg=mh-rs-w64-cdc32-96-192-p128-k24-h18-hh64-b64url
 content_sim=<24 colon-separated 3-character base64url tokens>
 ```
 

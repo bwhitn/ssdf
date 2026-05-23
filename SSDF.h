@@ -14,7 +14,8 @@ namespace ssdf {
 inline constexpr char SSDF_TOKEN_SEPARATOR = ':';
 inline constexpr size_t SSDF_MINHASH18X24_VALUES = 24;
 inline constexpr size_t SSDF_MINHASH_VALUES = SSDF_MINHASH18X24_VALUES;
-inline constexpr std::string_view SSDF_MINHASH18X24_ALG = "mh-buz32-96-192-w12-k24-h18-hh64-b64url";
+inline constexpr std::string_view SSDF_MINHASH18X24_ALG =
+    "mh-rs-w64-cdc32-96-192-p128-k24-h18-hh64-b64url";
 
 struct Stats {
     uint64_t bytes_processed = 0;
@@ -57,11 +58,14 @@ private:
 
     void update_scale(RollingState& scale, uint8_t byte);
     void observe_complete_window(RollingState& scale);
-    void select_feature(uint64_t feature_hash);
+    void select_feature_range(uint64_t feature_hash, size_t row_begin, size_t row_end, bool& has_last,
+                              uint64_t& last);
 
-    std::array<RollingState, 3> rolling_scales_;
-    bool has_last_minhash_feature_ = false;
-    uint64_t last_minhash_feature_ = 0;
+    std::array<RollingState, 4> rolling_scales_;
+    bool has_last_winnow_feature_ = false;
+    uint64_t last_winnow_feature_ = 0;
+    bool has_last_cdc_feature_ = false;
+    uint64_t last_cdc_feature_ = 0;
 
     std::array<uint64_t, SSDF_MINHASH_VALUES> minhash_values_;
     Stats stats_;
