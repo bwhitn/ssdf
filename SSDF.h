@@ -9,30 +9,30 @@
 #include <string>
 #include <string_view>
 
-namespace zeek::content_sim {
+namespace ssdf {
 
-inline constexpr char CONTENT_SIM_TOKEN_SEPARATOR = ':';
-inline constexpr size_t CONTENT_SIM_MINHASH_VALUES = 80;
-inline constexpr size_t CONTENT_SIM_MINHASH18X24_VALUES = 24;
-inline constexpr std::string_view CONTENT_SIM_MINHASH18X24_ALG = "mh-buz32-96-192-w12-k24-h18-hh64-b64url";
+inline constexpr char SSDF_TOKEN_SEPARATOR = ':';
+inline constexpr size_t SSDF_MINHASH_VALUES = 80;
+inline constexpr size_t SSDF_MINHASH18X24_VALUES = 24;
+inline constexpr std::string_view SSDF_MINHASH18X24_ALG = "mh-buz32-96-192-w12-k24-h18-hh64-b64url";
 
-struct ContentSimStats {
+struct Stats {
     uint64_t bytes_processed = 0;
     uint64_t rolling_windows = 0;
     uint64_t selected_features = 0;
     uint64_t minhash_updates = 0;
 };
 
-class ContentSimHasher {
+class Hasher {
 public:
-    ContentSimHasher();
+    Hasher();
 
     void update(const uint8_t* data, size_t len);
 
     std::optional<std::string> finalize() const;
-    std::optional<std::array<uint64_t, CONTENT_SIM_MINHASH_VALUES>> minhash_signature() const;
+    std::optional<std::array<uint64_t, SSDF_MINHASH_VALUES>> minhash_signature() const;
 
-    const ContentSimStats& stats() const { return stats_; }
+    const Stats& stats() const { return stats_; }
 
 private:
     struct WinnowEntry {
@@ -61,8 +61,8 @@ private:
     std::array<RollingState, 3> rolling_scales_;
     std::optional<uint64_t> last_minhash_feature_;
 
-    std::array<uint64_t, CONTENT_SIM_MINHASH_VALUES> minhash_values_;
-    ContentSimStats stats_;
+    std::array<uint64_t, SSDF_MINHASH_VALUES> minhash_values_;
+    Stats stats_;
 };
 
 std::string EncodeBase64Url18(uint32_t value);
@@ -74,4 +74,4 @@ std::string MinHash18TokenForValue(std::string_view alg, size_t row_index, uint6
 
 } // namespace detail
 
-} // namespace zeek::content_sim
+} // namespace ssdf

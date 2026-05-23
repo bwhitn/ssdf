@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "ContentSim.h"
+#include "SSDF.h"
 
 #include <algorithm>
 #include <array>
@@ -17,11 +17,11 @@
 
 namespace {
 
-using zeek::content_sim::CONTENT_SIM_MINHASH18X24_ALG;
-using zeek::content_sim::CONTENT_SIM_MINHASH18X24_VALUES;
-using zeek::content_sim::CONTENT_SIM_MINHASH_VALUES;
-using zeek::content_sim::CONTENT_SIM_TOKEN_SEPARATOR;
-using zeek::content_sim::ContentSimHasher;
+using ssdf::SSDF_MINHASH18X24_ALG;
+using ssdf::SSDF_MINHASH18X24_VALUES;
+using ssdf::SSDF_MINHASH_VALUES;
+using ssdf::SSDF_TOKEN_SEPARATOR;
+using ssdf::Hasher;
 
 constexpr size_t kDefaultBenchmarkBytes = 16 * 1024 * 1024;
 
@@ -34,10 +34,10 @@ void Usage(const char* argv0) {
               << "       " << argv0 << " --benchmark [FILE ...]\n";
 }
 
-bool FeedFile(const std::filesystem::path& path, size_t chunk_size, ContentSimHasher& hasher) {
+bool FeedFile(const std::filesystem::path& path, size_t chunk_size, Hasher& hasher) {
     std::ifstream input(path, std::ios::binary);
     if ( ! input ) {
-        std::cerr << "content-sim: cannot open " << path << "\n";
+        std::cerr << "ssdf: cannot open " << path << "\n";
         return false;
     }
 
@@ -51,7 +51,7 @@ bool FeedFile(const std::filesystem::path& path, size_t chunk_size, ContentSimHa
     }
 
     if ( input.bad() ) {
-        std::cerr << "content-sim: error reading " << path << "\n";
+        std::cerr << "ssdf: error reading " << path << "\n";
         return false;
     }
 
@@ -59,8 +59,8 @@ bool FeedFile(const std::filesystem::path& path, size_t chunk_size, ContentSimHa
 }
 
 std::optional<std::string> HashFile(const std::filesystem::path& path, size_t chunk_size,
-                                    ContentSimHasher* out_hasher = nullptr) {
-    ContentSimHasher local_hasher;
+                                    Hasher* out_hasher = nullptr) {
+    Hasher local_hasher;
     auto& hasher = out_hasher ? *out_hasher : local_hasher;
 
     if ( ! FeedFile(path, chunk_size, hasher) )
@@ -70,17 +70,17 @@ std::optional<std::string> HashFile(const std::filesystem::path& path, size_t ch
 }
 
 int HashCommand(const std::filesystem::path& path) {
-    ContentSimHasher hasher;
+    Hasher hasher;
     if ( ! FeedFile(path, 64 * 1024, hasher) )
         return 1;
 
     auto result = hasher.finalize();
     if ( ! result ) {
-        std::cerr << "content-sim: not enough content to produce " << CONTENT_SIM_MINHASH18X24_ALG << "\n";
+        std::cerr << "ssdf: not enough content to produce " << SSDF_MINHASH18X24_ALG << "\n";
         return 2;
     }
 
-    std::cout << CONTENT_SIM_MINHASH18X24_ALG << ' ' << *result << '\n';
+    std::cout << SSDF_MINHASH18X24_ALG << ' ' << *result << '\n';
     return 0;
 }
 
@@ -99,7 +99,7 @@ int ChunkTestCommand(const std::filesystem::path& path) {
 
         auto result = HashFile(path, actual_chunk);
         if ( ! result ) {
-            std::cerr << "content-sim: chunk " << chunk << " produced no content_sim\n";
+            std::cerr << "ssdf: chunk " << chunk << " produced no content_sim\n";
             ok = false;
             continue;
         }
@@ -109,7 +109,7 @@ int ChunkTestCommand(const std::filesystem::path& path) {
         else if ( *expected != *result )
             ok = false;
 
-        std::cout << actual_chunk << ' ' << CONTENT_SIM_MINHASH18X24_ALG << ' ' << *result << '\n';
+        std::cout << actual_chunk << ' ' << SSDF_MINHASH18X24_ALG << ' ' << *result << '\n';
     }
 
     return ok ? 0 : 3;
@@ -120,7 +120,7 @@ std::vector<std::string_view> SplitTokens(std::string_view value) {
     size_t start = 0;
 
     while ( start <= value.size() ) {
-        const auto separator = value.find(CONTENT_SIM_TOKEN_SEPARATOR, start);
+        const auto separator = value.find(SSDF_TOKEN_SEPARATOR, start);
         if ( separator == std::string_view::npos ) {
             tokens.emplace_back(value.substr(start));
             break;
@@ -148,14 +148,14 @@ size_t MatchingTokens(std::string_view lhs, std::string_view rhs) {
 }
 
 int CompareCommand(const std::filesystem::path& lhs_path, const std::filesystem::path& rhs_path) {
-    ContentSimHasher lhs_hasher;
+    Hasher lhs_hasher;
     if ( ! FeedFile(lhs_path, 64 * 1024, lhs_hasher) )
         return 1;
 
     const auto lhs_sim = lhs_hasher.finalize();
     const auto lhs_minhash = lhs_hasher.minhash_signature();
 
-    ContentSimHasher rhs_hasher;
+    Hasher rhs_hasher;
     if ( ! FeedFile(rhs_path, 64 * 1024, rhs_hasher) )
         return 1;
 
@@ -163,42 +163,42 @@ int CompareCommand(const std::filesystem::path& lhs_path, const std::filesystem:
     const auto rhs_minhash = rhs_hasher.minhash_signature();
 
     if ( ! lhs_sim || ! lhs_minhash ) {
-        std::cerr << "content-sim: not enough content to produce " << CONTENT_SIM_MINHASH18X24_ALG << " for "
+        std::cerr << "ssdf: not enough content to produce " << SSDF_MINHASH18X24_ALG << " for "
                   << lhs_path << "\n";
         return 2;
     }
 
     if ( ! rhs_sim || ! rhs_minhash ) {
-        std::cerr << "content-sim: not enough content to produce " << CONTENT_SIM_MINHASH18X24_ALG << " for "
+        std::cerr << "ssdf: not enough content to produce " << SSDF_MINHASH18X24_ALG << " for "
                   << rhs_path << "\n";
         return 2;
     }
 
     size_t matching_80_rows = 0;
-    for ( size_t i = 0; i < CONTENT_SIM_MINHASH_VALUES; ++i ) {
+    for ( size_t i = 0; i < SSDF_MINHASH_VALUES; ++i ) {
         if ( (*lhs_minhash)[i] == (*rhs_minhash)[i] )
             ++matching_80_rows;
     }
 
     size_t matching_24_rows = 0;
-    for ( size_t i = 0; i < CONTENT_SIM_MINHASH18X24_VALUES; ++i ) {
+    for ( size_t i = 0; i < SSDF_MINHASH18X24_VALUES; ++i ) {
         if ( (*lhs_minhash)[i] == (*rhs_minhash)[i] )
             ++matching_24_rows;
     }
 
     const auto matching_tokens = MatchingTokens(*lhs_sim, *rhs_sim);
-    const auto row_80_jaccard = static_cast<double>(matching_80_rows) / CONTENT_SIM_MINHASH_VALUES;
-    const auto row_24_jaccard = static_cast<double>(matching_24_rows) / CONTENT_SIM_MINHASH18X24_VALUES;
-    const auto token_jaccard = static_cast<double>(matching_tokens) / CONTENT_SIM_MINHASH18X24_VALUES;
+    const auto row_80_jaccard = static_cast<double>(matching_80_rows) / SSDF_MINHASH_VALUES;
+    const auto row_24_jaccard = static_cast<double>(matching_24_rows) / SSDF_MINHASH18X24_VALUES;
+    const auto token_jaccard = static_cast<double>(matching_tokens) / SSDF_MINHASH18X24_VALUES;
 
-    std::cout << "alg=" << CONTENT_SIM_MINHASH18X24_ALG << '\n'
+    std::cout << "alg=" << SSDF_MINHASH18X24_ALG << '\n'
               << "file_a=" << lhs_path << '\n'
               << "file_b=" << rhs_path << '\n'
-              << "raw_minhash_matching_rows=" << matching_80_rows << '/' << CONTENT_SIM_MINHASH_VALUES << '\n'
+              << "raw_minhash_matching_rows=" << matching_80_rows << '/' << SSDF_MINHASH_VALUES << '\n'
               << "raw_minhash_jaccard_estimate=" << std::fixed << std::setprecision(6) << row_80_jaccard << '\n'
-              << "content_sim_matching_rows=" << matching_24_rows << '/' << CONTENT_SIM_MINHASH18X24_VALUES << '\n'
+              << "content_sim_matching_rows=" << matching_24_rows << '/' << SSDF_MINHASH18X24_VALUES << '\n'
               << "content_sim_row_similarity=" << std::fixed << std::setprecision(6) << row_24_jaccard << '\n'
-              << "content_sim_matching_tokens=" << matching_tokens << '/' << CONTENT_SIM_MINHASH18X24_VALUES << '\n'
+              << "content_sim_matching_tokens=" << matching_tokens << '/' << SSDF_MINHASH18X24_VALUES << '\n'
               << "content_sim_token_similarity=" << std::fixed << std::setprecision(6) << token_jaccard << '\n'
               << "content_sim_a=" << *lhs_sim << '\n'
               << "content_sim_b=" << *rhs_sim << '\n';
@@ -208,7 +208,7 @@ int CompareCommand(const std::filesystem::path& lhs_path, const std::filesystem:
 
 uint64_t NextSplitMix(uint64_t& state) {
     state += 0x9e3779b97f4a7c15ULL;
-    return zeek::content_sim::detail::Mix64(state);
+    return ssdf::detail::Mix64(state);
 }
 
 void FillRandom(std::vector<uint8_t>& buffer, uint64_t& state) {
@@ -220,19 +220,19 @@ void FillRandom(std::vector<uint8_t>& buffer, uint64_t& state) {
 }
 
 void PrintBenchmarkResult(const std::string& name, uint64_t bytes, std::chrono::steady_clock::duration elapsed,
-                          const ContentSimHasher& hasher, const std::optional<std::string>& sim) {
+                          const Hasher& hasher, const std::optional<std::string>& sim) {
     const auto seconds = std::chrono::duration<double>(elapsed).count();
     const auto mbps = seconds > 0.0 ? (static_cast<double>(bytes) / (1024.0 * 1024.0)) / seconds : 0.0;
     const auto& stats = hasher.stats();
 
-    std::cout << "name=" << name << " alg=" << CONTENT_SIM_MINHASH18X24_ALG << " bytes=" << bytes
+    std::cout << "name=" << name << " alg=" << SSDF_MINHASH18X24_ALG << " bytes=" << bytes
               << " elapsed_s=" << seconds << " mbps=" << mbps << " rolling_windows=" << stats.rolling_windows
               << " selected_features=" << stats.selected_features << " minhash_updates=" << stats.minhash_updates
               << " content_sim=" << (sim ? *sim : std::string("<none>")) << '\n';
 }
 
 void BenchmarkGenerated(const std::string& name, bool random_data, size_t bytes) {
-    ContentSimHasher hasher;
+    Hasher hasher;
     std::vector<uint8_t> buffer(64 * 1024);
     uint64_t rng = 0x1234abcd9876ef00ULL;
     uint64_t processed = 0;
@@ -258,7 +258,7 @@ void BenchmarkGenerated(const std::string& name, bool random_data, size_t bytes)
 }
 
 void BenchmarkFile(const std::filesystem::path& path) {
-    ContentSimHasher hasher;
+    Hasher hasher;
     const auto start = std::chrono::steady_clock::now();
 
     if ( ! FeedFile(path, 64 * 1024, hasher) )

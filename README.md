@@ -1,4 +1,4 @@
-# Content Similarity Prototype
+# SSDF Prototype
 
 This directory contains a standalone prototype for the file-content similarity
 value emitted by the Zeek analyzer:
@@ -44,15 +44,15 @@ ctest --test-dir build --output-on-failure
 ```
 
 ```bash
-build/content-sim FILE
-build/content-sim --compare FILE FILE
-build/content-sim --minhash18x24 FILE
-build/content-sim --minhash18x24-compare FILE FILE
-build/content-sim --chunk-test FILE
-build/content-sim --benchmark [FILE ...]
+build/ssdf FILE
+build/ssdf --compare FILE FILE
+build/ssdf --minhash18x24 FILE
+build/ssdf --minhash18x24-compare FILE FILE
+build/ssdf --chunk-test FILE
+build/ssdf --benchmark [FILE ...]
 ```
 
-`content-sim FILE` prints:
+`ssdf FILE` prints:
 
 ```text
 mh-buz32-96-192-w12-k24-h18-hh64-b64url <content_sim>

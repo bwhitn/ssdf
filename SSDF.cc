@@ -1,6 +1,6 @@
 // See the file "COPYING" in the main distribution directory for copyright.
 
-#include "ContentSim.h"
+#include "SSDF.h"
 
 #include <algorithm>
 #include <limits>
@@ -8,14 +8,14 @@
 
 #include "c/highwayhash.h"
 
-namespace zeek::content_sim {
+namespace ssdf {
 
 namespace {
 
 constexpr size_t kMinUsefulBytes = 64;
 constexpr size_t kActiveWinnowingWindow = 12;
 constexpr std::array<size_t, 3> kActiveBuzHashWindows = {32, 96, 192};
-constexpr size_t kMinHashValues = CONTENT_SIM_MINHASH_VALUES;
+constexpr size_t kMinHashValues = SSDF_MINHASH_VALUES;
 constexpr uint64_t kFeatureSalt = 0x7a09e667f3bcc909ULL;
 constexpr uint64_t kMinHashSeed = 0x243f6a8885a308d3ULL;
 constexpr uint64_t kMinUsefulSelectedFeatures = 4;
@@ -24,7 +24,7 @@ constexpr uint64_t kMinUsefulSelectedFeatures = 4;
 constexpr uint64_t kHighwayHashKey[4] = {0x6d682d6c73682d76ULL, 0x312d62757a36342dULL, 0x7733322d6b33322dULL,
                                          0x6831382d68363834ULL};
 
-static_assert(kMinHashValues == CONTENT_SIM_MINHASH_VALUES);
+static_assert(kMinHashValues == SSDF_MINHASH_VALUES);
 
 constexpr std::array<uint64_t, 256> kByteHashTable = {
     0x71f56d55bb21ddd7ULL, 0xf7dbbedc4cb6c316ULL, 0x9b323244a20947a6ULL, 0x76ae578f4cefa3dbULL,
@@ -105,7 +105,7 @@ class HighwayHashInput {
 public:
     void AppendBytes(const void* bytes, size_t len) {
         if ( size_ + len > data_.size() )
-            throw std::length_error("content-sim HighwayHash input buffer is too small");
+            throw std::length_error("ssdf HighwayHash input buffer is too small");
 
         const auto* src = static_cast<const uint8_t*>(bytes);
         std::copy_n(src, len, data_.data() + size_);
@@ -183,9 +183,9 @@ std::string EncodeBase64Url18(uint32_t value) {
     return result;
 }
 
-void ContentSimHasher::update(const uint8_t* data, size_t len) {
+void Hasher::update(const uint8_t* data, size_t len) {
     if ( ! data && len != 0 )
-        throw std::invalid_argument("ContentSimHasher::update received null data with non-zero length");
+        throw std::invalid_argument("Hasher::update received null data with non-zero length");
 
     for ( size_t i = 0; i < len; ++i ) {
         const auto byte = data[i];
@@ -196,7 +196,7 @@ void ContentSimHasher::update(const uint8_t* data, size_t len) {
     }
 }
 
-ContentSimHasher::ContentSimHasher() {
+Hasher::Hasher() {
     std::fill(minhash_values_.begin(), minhash_values_.end(), std::numeric_limits<uint64_t>::max());
 
     for ( size_t i = 0; i < rolling_scales_.size(); ++i ) {
@@ -205,7 +205,7 @@ ContentSimHasher::ContentSimHasher() {
     }
 }
 
-void ContentSimHasher::update_scale(RollingState& scale, uint8_t byte) {
+void Hasher::update_scale(RollingState& scale, uint8_t byte) {
     if ( scale.rolling_fill < scale.window_size ) {
         scale.rolling_hash = Rotl64(scale.rolling_hash, 1) ^ kByteHashTable[byte];
         scale.rolling_window[scale.rolling_pos] = byte;
@@ -226,7 +226,7 @@ void ContentSimHasher::update_scale(RollingState& scale, uint8_t byte) {
     observe_complete_window(scale);
 }
 
-void ContentSimHasher::observe_complete_window(RollingState& scale) {
+void Hasher::observe_complete_window(RollingState& scale) {
     const auto feature_index = scale.feature_index;
     ++scale.feature_index;
 
@@ -262,7 +262,7 @@ void ContentSimHasher::observe_complete_window(RollingState& scale) {
     select_feature(minimizer.value);
 }
 
-void ContentSimHasher::select_feature(uint64_t feature_hash) {
+void Hasher::select_feature(uint64_t feature_hash) {
     ++stats_.selected_features;
 
     if ( last_minhash_feature_ && *last_minhash_feature_ == feature_hash )
@@ -275,25 +275,25 @@ void ContentSimHasher::select_feature(uint64_t feature_hash) {
         minhash_values_[i] = std::min(minhash_values_[i], MinHashCandidate(feature_hash, i));
 }
 
-std::optional<std::string> ContentSimHasher::finalize() const {
+std::optional<std::string> Hasher::finalize() const {
     const auto signature = minhash_signature();
     if ( ! signature )
         return std::nullopt;
 
     std::string result;
-    result.reserve(CONTENT_SIM_MINHASH18X24_VALUES * 3 + (CONTENT_SIM_MINHASH18X24_VALUES - 1));
+    result.reserve(SSDF_MINHASH18X24_VALUES * 3 + (SSDF_MINHASH18X24_VALUES - 1));
 
-    for ( size_t row = 0; row < CONTENT_SIM_MINHASH18X24_VALUES; ++row ) {
+    for ( size_t row = 0; row < SSDF_MINHASH18X24_VALUES; ++row ) {
         if ( row != 0 )
-            result.push_back(CONTENT_SIM_TOKEN_SEPARATOR);
+            result.push_back(SSDF_TOKEN_SEPARATOR);
 
-        result += detail::MinHash18TokenForValue(CONTENT_SIM_MINHASH18X24_ALG, row, (*signature)[row]);
+        result += detail::MinHash18TokenForValue(SSDF_MINHASH18X24_ALG, row, (*signature)[row]);
     }
 
     return result;
 }
 
-std::optional<std::array<uint64_t, CONTENT_SIM_MINHASH_VALUES>> ContentSimHasher::minhash_signature() const {
+std::optional<std::array<uint64_t, SSDF_MINHASH_VALUES>> Hasher::minhash_signature() const {
     if ( stats_.bytes_processed < kMinUsefulBytes )
         return std::nullopt;
 
@@ -303,4 +303,4 @@ std::optional<std::array<uint64_t, CONTENT_SIM_MINHASH_VALUES>> ContentSimHasher
     return minhash_values_;
 }
 
-} // namespace zeek::content_sim
+} // namespace ssdf

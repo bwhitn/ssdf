@@ -101,7 +101,7 @@ class PcapWriter:
 
 
 def add_http_download(writer, client_port, name, body, base_ident, client_seq, server_seq):
-    request = f"GET /{name} HTTP/1.1\r\nHost: files.example\r\nUser-Agent: content-sim-fixture\r\n\r\n".encode("ascii")
+    request = f"GET /{name} HTTP/1.1\r\nHost: files.example\r\nUser-Agent: ssdf-fixture\r\n\r\n".encode("ascii")
     response = make_http_response(name, body)
     ident = base_ident
 
@@ -135,7 +135,7 @@ def main():
     args = parser.parse_args()
 
     base = make_body()
-    inserted = b"content-sim inserted block: small stable mutation\n" * 2
+    inserted = b"ssdf inserted block: small stable mutation\n" * 2
     near = base[:8192] + inserted + base[8192:]
 
     writer = PcapWriter(args.output)
