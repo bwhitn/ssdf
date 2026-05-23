@@ -17,7 +17,6 @@ constexpr size_t kActiveWinnowingWindow = 12;
 constexpr size_t kWinnowWindowSize = 64;
 constexpr size_t kWinnowRows = SSDF_MINHASH_VALUES / 2;
 constexpr uint64_t kCdcGateMask = 127;
-constexpr std::array<size_t, 4> kActiveBuzHashWindows = {32, 64, 96, 192};
 constexpr size_t kMinHashValues = SSDF_MINHASH_VALUES;
 constexpr uint64_t kFeatureSalt = 0x7a09e667f3bcc909ULL;
 constexpr uint64_t kMinHashSeed = 0x243f6a8885a308d3ULL;
@@ -157,6 +156,16 @@ uint64_t FeatureSalt(size_t window_size, size_t scale_index) {
     return kFeatureSalt ^ detail::Mix64(window_size + static_cast<uint64_t>(scale_index) * 0x9e3779b97f4a7c15ULL);
 }
 
+size_t NextWinnowIndex(size_t index) {
+    ++index;
+    return index == kActiveWinnowingWindow ? 0 : index;
+}
+
+size_t WinnowIndex(size_t begin, size_t offset) {
+    auto index = begin + offset;
+    return index >= kActiveWinnowingWindow ? index - kActiveWinnowingWindow : index;
+}
+
 } // namespace
 
 namespace detail {
@@ -200,87 +209,119 @@ void Hasher::update(const uint8_t* data, size_t len) {
 
     for ( size_t i = 0; i < len; ++i ) {
         const auto byte = data[i];
-        ++stats_.bytes_processed;
+        const auto offset = stats_.bytes_processed++;
+        history_[offset & 0xffU] = byte;
 
-        for ( auto& scale : rolling_scales_ )
-            update_scale(scale, byte);
+        update_cdc32(byte, offset);
+        update_winnow64(byte, offset);
+        update_cdc96(byte, offset);
+        update_cdc192(byte, offset);
     }
 }
 
 Hasher::Hasher() {
     std::fill(minhash_values_.begin(), minhash_values_.end(), std::numeric_limits<uint64_t>::max());
 
-    for ( size_t i = 0; i < rolling_scales_.size(); ++i ) {
-        rolling_scales_[i].window_size = kActiveBuzHashWindows[i];
-        rolling_scales_[i].scale_salt = FeatureSalt(kActiveBuzHashWindows[i], i);
-    }
+    cdc32_salt_ = FeatureSalt(32, 0);
+    winnow64_salt_ = FeatureSalt(64, 1);
+    cdc96_salt_ = FeatureSalt(96, 2);
+    cdc192_salt_ = FeatureSalt(192, 3);
 }
 
-void Hasher::update_scale(RollingState& scale, uint8_t byte) {
-    if ( scale.rolling_fill < scale.window_size ) {
-        scale.rolling_hash = Rotl64(scale.rolling_hash, 1) ^ kByteHashTable[byte];
-        scale.rolling_window[scale.rolling_pos] = byte;
-        scale.rolling_pos = (scale.rolling_pos + 1) % scale.window_size;
-        ++scale.rolling_fill;
-
-        if ( scale.rolling_fill == scale.window_size )
-            observe_complete_window(scale);
-
+void Hasher::update_cdc32(uint8_t byte, uint64_t offset) {
+    if ( offset < 32 ) {
+        rolling32_hash_ = Rotl64(rolling32_hash_, 1) ^ kByteHashTable[byte];
+        if ( offset + 1 == 32 )
+            observe_cdc_window(rolling32_hash_, cdc32_salt_);
         return;
     }
 
-    const auto old_byte = scale.rolling_window[scale.rolling_pos];
-    scale.rolling_window[scale.rolling_pos] = byte;
-    scale.rolling_pos = (scale.rolling_pos + 1) % scale.window_size;
-    scale.rolling_hash = Rotl64(scale.rolling_hash, 1) ^ Rotl64(kByteHashTable[old_byte], scale.window_size) ^
-                         kByteHashTable[byte];
-    observe_complete_window(scale);
+    const auto old_byte = history_[(offset - 32) & 0xffU];
+    rolling32_hash_ = Rotl64(rolling32_hash_, 1) ^ Rotl64(kByteHashTable[old_byte], 32) ^ kByteHashTable[byte];
+    observe_cdc_window(rolling32_hash_, cdc32_salt_);
 }
 
-void Hasher::observe_complete_window(RollingState& scale) {
-    const auto feature_index = scale.feature_index;
-    ++scale.feature_index;
+void Hasher::update_winnow64(uint8_t byte, uint64_t offset) {
+    if ( offset < kWinnowWindowSize ) {
+        rolling64_hash_ = Rotl64(rolling64_hash_, 1) ^ kByteHashTable[byte];
+        if ( offset + 1 == kWinnowWindowSize )
+            observe_winnow64_window();
+        return;
+    }
+
+    const auto old_byte = history_[(offset - kWinnowWindowSize) & 0xffU];
+    rolling64_hash_ = Rotl64(rolling64_hash_, 1) ^ kByteHashTable[old_byte] ^ kByteHashTable[byte];
+    observe_winnow64_window();
+}
+
+void Hasher::update_cdc96(uint8_t byte, uint64_t offset) {
+    if ( offset < 96 ) {
+        rolling96_hash_ = Rotl64(rolling96_hash_, 1) ^ kByteHashTable[byte];
+        if ( offset + 1 == 96 )
+            observe_cdc_window(rolling96_hash_, cdc96_salt_);
+        return;
+    }
+
+    const auto old_byte = history_[(offset - 96) & 0xffU];
+    rolling96_hash_ = Rotl64(rolling96_hash_, 1) ^ Rotl64(kByteHashTable[old_byte], 32) ^ kByteHashTable[byte];
+    observe_cdc_window(rolling96_hash_, cdc96_salt_);
+}
+
+void Hasher::update_cdc192(uint8_t byte, uint64_t offset) {
+    if ( offset < 192 ) {
+        rolling192_hash_ = Rotl64(rolling192_hash_, 1) ^ kByteHashTable[byte];
+        if ( offset + 1 == 192 )
+            observe_cdc_window(rolling192_hash_, cdc192_salt_);
+        return;
+    }
+
+    const auto old_byte = history_[(offset - 192) & 0xffU];
+    rolling192_hash_ = Rotl64(rolling192_hash_, 1) ^ kByteHashTable[old_byte] ^ kByteHashTable[byte];
+    observe_cdc_window(rolling192_hash_, cdc192_salt_);
+}
+
+void Hasher::observe_cdc_window(uint64_t rolling_hash, uint64_t scale_salt) {
+    ++stats_.rolling_windows;
+
+    const auto raw_feature = rolling_hash ^ scale_salt;
+    if ( (raw_feature & kCdcGateMask) == 0 )
+        select_feature_range(detail::Mix64(raw_feature), kWinnowRows, minhash_values_.size(),
+                             has_last_cdc_feature_, last_cdc_feature_);
+}
+
+void Hasher::observe_winnow64_window() {
+    const auto feature_index = winnow64_feature_index_++;
 
     ++stats_.rolling_windows;
-    const auto raw_feature = scale.rolling_hash ^ scale.scale_salt;
+    const auto feature_hash = detail::Mix64(rolling64_hash_ ^ winnow64_salt_);
 
-    if ( scale.window_size != kWinnowWindowSize ) {
-        if ( (raw_feature & kCdcGateMask) == 0 )
-            select_feature_range(detail::Mix64(raw_feature), kWinnowRows, minhash_values_.size(),
-                                 has_last_cdc_feature_, last_cdc_feature_);
-
-        return;
+    while ( winnow64_size_ != 0 &&
+            winnow64_queue_[winnow64_begin_].index + kActiveWinnowingWindow <= feature_index ) {
+        winnow64_begin_ = NextWinnowIndex(winnow64_begin_);
+        --winnow64_size_;
     }
 
-    const auto feature_hash = detail::Mix64(raw_feature);
-
-    while ( scale.winnow_size != 0 &&
-            scale.winnow_queue[scale.winnow_begin].index + kActiveWinnowingWindow <= feature_index ) {
-        scale.winnow_begin = (scale.winnow_begin + 1) % kActiveWinnowingWindow;
-        --scale.winnow_size;
-    }
-
-    while ( scale.winnow_size != 0 ) {
-        const auto back = (scale.winnow_begin + scale.winnow_size - 1) % kActiveWinnowingWindow;
-        if ( scale.winnow_queue[back].value <= feature_hash )
+    while ( winnow64_size_ != 0 ) {
+        const auto back = WinnowIndex(winnow64_begin_, winnow64_size_ - 1);
+        if ( winnow64_queue_[back].value <= feature_hash )
             break;
 
-        --scale.winnow_size;
+        --winnow64_size_;
     }
 
-    const auto insert = (scale.winnow_begin + scale.winnow_size) % kActiveWinnowingWindow;
-    scale.winnow_queue[insert] = {feature_hash, feature_index};
-    ++scale.winnow_size;
+    const auto insert = WinnowIndex(winnow64_begin_, winnow64_size_);
+    winnow64_queue_[insert] = {feature_hash, feature_index};
+    ++winnow64_size_;
 
     if ( feature_index + 1 < kActiveWinnowingWindow )
         return;
 
-    const auto& minimizer = scale.winnow_queue[scale.winnow_begin];
-    if ( scale.has_last_selected_index && scale.last_selected_index == minimizer.index )
+    const auto& minimizer = winnow64_queue_[winnow64_begin_];
+    if ( has_winnow64_selected_index_ && winnow64_selected_index_ == minimizer.index )
         return;
 
-    scale.has_last_selected_index = true;
-    scale.last_selected_index = minimizer.index;
+    has_winnow64_selected_index_ = true;
+    winnow64_selected_index_ = minimizer.index;
     select_feature_range(minimizer.value, 0, kWinnowRows, has_last_winnow_feature_, last_winnow_feature_);
 }
 

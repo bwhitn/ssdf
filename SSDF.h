@@ -41,27 +41,33 @@ private:
         uint64_t index = 0;
     };
 
-    struct RollingState {
-        size_t window_size = 0;
-        uint64_t scale_salt = 0;
-        std::array<uint8_t, 192> rolling_window = {};
-        size_t rolling_fill = 0;
-        size_t rolling_pos = 0;
-        uint64_t rolling_hash = 0;
-        uint64_t feature_index = 0;
-        std::array<WinnowEntry, 12> winnow_queue = {};
-        size_t winnow_begin = 0;
-        size_t winnow_size = 0;
-        bool has_last_selected_index = false;
-        uint64_t last_selected_index = 0;
-    };
-
-    void update_scale(RollingState& scale, uint8_t byte);
-    void observe_complete_window(RollingState& scale);
+    void update_cdc32(uint8_t byte, uint64_t offset);
+    void update_winnow64(uint8_t byte, uint64_t offset);
+    void update_cdc96(uint8_t byte, uint64_t offset);
+    void update_cdc192(uint8_t byte, uint64_t offset);
+    void observe_cdc_window(uint64_t rolling_hash, uint64_t scale_salt);
+    void observe_winnow64_window();
     void select_feature_range(uint64_t feature_hash, size_t row_begin, size_t row_end, bool& has_last,
                               uint64_t& last);
 
-    std::array<RollingState, 4> rolling_scales_;
+    std::array<uint8_t, 256> history_ = {};
+    uint64_t rolling32_hash_ = 0;
+    uint64_t rolling64_hash_ = 0;
+    uint64_t rolling96_hash_ = 0;
+    uint64_t rolling192_hash_ = 0;
+
+    uint64_t cdc32_salt_ = 0;
+    uint64_t winnow64_salt_ = 0;
+    uint64_t cdc96_salt_ = 0;
+    uint64_t cdc192_salt_ = 0;
+
+    uint64_t winnow64_feature_index_ = 0;
+    std::array<WinnowEntry, 12> winnow64_queue_ = {};
+    size_t winnow64_begin_ = 0;
+    size_t winnow64_size_ = 0;
+    bool has_winnow64_selected_index_ = false;
+    uint64_t winnow64_selected_index_ = 0;
+
     bool has_last_winnow_feature_ = false;
     uint64_t last_winnow_feature_ = 0;
     bool has_last_cdc_feature_ = false;

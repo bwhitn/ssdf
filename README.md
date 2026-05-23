@@ -46,6 +46,20 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+For speed measurements, use a stripped native Release build so debug metadata
+and generic CPU code do not skew the numbers:
+
+```bash
+cmake -S . -B build-perf \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+  -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -march=native -fomit-frame-pointer" \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -march=native -fomit-frame-pointer"
+cmake --build build-perf -j$(nproc)
+strip build-perf/ssdf build-perf/ssdf-tests
+build-perf/ssdf --benchmark [FILE ...]
+```
+
 ```bash
 build/ssdf FILE
 build/ssdf --compare FILE FILE
