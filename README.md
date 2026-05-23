@@ -19,8 +19,8 @@ The streaming hasher:
 1. Maintains 32-byte, 96-byte, and 192-byte rolling buzhash windows.
 2. Applies a splitmix64-style avalanche to each rolling hash.
 3. Selects features through winnowing with a 12-feature minimizer window.
-4. Updates an internal 80-row MinHash signature from each selected feature.
-5. Emits the first 24 MinHash rows as row-scoped 18-bit tokens.
+4. Updates a 24-row MinHash signature from each selected feature.
+5. Emits the MinHash rows as row-scoped 18-bit tokens.
 6. Mixes the algorithm id, row index, and MinHash row value with HighwayHash
    and a fixed public algorithm key.
 7. Truncates each row hash to 18 bits and encodes it as 3 unpadded RFC4648
@@ -62,9 +62,9 @@ mh-buz32-96-192-w12-k24-h18-hh64-b64url <content_sim>
 default hash and comparison modes. The older `--minhash18x32` aliases are still
 accepted for ad-hoc compatibility.
 
-`--compare` hashes two files and reports raw MinHash row agreement across the
-internal 80-row signature, row agreement across the emitted 24 rows, emitted
-token agreement, and both content similarity strings.
+`--compare` hashes two files and reports raw MinHash row agreement, row
+agreement across the emitted 24 rows, emitted token agreement, and both content
+similarity strings.
 
 `--chunk-test` hashes the same file with 1-byte, 7-byte, 64-byte, 4096-byte, and
 whole-file update calls and exits non-zero if the output differs.

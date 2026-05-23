@@ -255,9 +255,10 @@ void Hasher::observe_complete_window(RollingState& scale) {
         return;
 
     const auto& minimizer = scale.winnow_queue[scale.winnow_begin];
-    if ( scale.last_selected_index && *scale.last_selected_index == minimizer.index )
+    if ( scale.has_last_selected_index && scale.last_selected_index == minimizer.index )
         return;
 
+    scale.has_last_selected_index = true;
     scale.last_selected_index = minimizer.index;
     select_feature(minimizer.value);
 }
@@ -265,9 +266,10 @@ void Hasher::observe_complete_window(RollingState& scale) {
 void Hasher::select_feature(uint64_t feature_hash) {
     ++stats_.selected_features;
 
-    if ( last_minhash_feature_ && *last_minhash_feature_ == feature_hash )
+    if ( has_last_minhash_feature_ && last_minhash_feature_ == feature_hash )
         return;
 
+    has_last_minhash_feature_ = true;
     last_minhash_feature_ = feature_hash;
     ++stats_.minhash_updates;
 

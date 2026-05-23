@@ -174,10 +174,10 @@ int CompareCommand(const std::filesystem::path& lhs_path, const std::filesystem:
         return 2;
     }
 
-    size_t matching_80_rows = 0;
+    size_t matching_raw_rows = 0;
     for ( size_t i = 0; i < SSDF_MINHASH_VALUES; ++i ) {
         if ( (*lhs_minhash)[i] == (*rhs_minhash)[i] )
-            ++matching_80_rows;
+            ++matching_raw_rows;
     }
 
     size_t matching_24_rows = 0;
@@ -187,15 +187,15 @@ int CompareCommand(const std::filesystem::path& lhs_path, const std::filesystem:
     }
 
     const auto matching_tokens = MatchingTokens(*lhs_sim, *rhs_sim);
-    const auto row_80_jaccard = static_cast<double>(matching_80_rows) / SSDF_MINHASH_VALUES;
+    const auto raw_row_jaccard = static_cast<double>(matching_raw_rows) / SSDF_MINHASH_VALUES;
     const auto row_24_jaccard = static_cast<double>(matching_24_rows) / SSDF_MINHASH18X24_VALUES;
     const auto token_jaccard = static_cast<double>(matching_tokens) / SSDF_MINHASH18X24_VALUES;
 
     std::cout << "alg=" << SSDF_MINHASH18X24_ALG << '\n'
               << "file_a=" << lhs_path << '\n'
               << "file_b=" << rhs_path << '\n'
-              << "raw_minhash_matching_rows=" << matching_80_rows << '/' << SSDF_MINHASH_VALUES << '\n'
-              << "raw_minhash_jaccard_estimate=" << std::fixed << std::setprecision(6) << row_80_jaccard << '\n'
+              << "raw_minhash_matching_rows=" << matching_raw_rows << '/' << SSDF_MINHASH_VALUES << '\n'
+              << "raw_minhash_jaccard_estimate=" << std::fixed << std::setprecision(6) << raw_row_jaccard << '\n'
               << "content_sim_matching_rows=" << matching_24_rows << '/' << SSDF_MINHASH18X24_VALUES << '\n'
               << "content_sim_row_similarity=" << std::fixed << std::setprecision(6) << row_24_jaccard << '\n'
               << "content_sim_matching_tokens=" << matching_tokens << '/' << SSDF_MINHASH18X24_VALUES << '\n'
