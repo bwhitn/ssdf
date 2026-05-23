@@ -137,10 +137,18 @@ private:
     size_t size_ = 0;
 };
 
-uint64_t MinHashCandidate(uint64_t feature_hash, size_t index) {
-    auto seed = kMinHashSeed + static_cast<uint64_t>(index) * 0x9e3779b97f4a7c15ULL;
-    return detail::Mix64(feature_hash ^ detail::Mix64(seed));
+std::array<uint64_t, kMinHashValues> MakeMinHashRowSeeds() {
+    std::array<uint64_t, kMinHashValues> seeds = {};
+
+    for ( size_t i = 0; i < seeds.size(); ++i ) {
+        const auto seed = kMinHashSeed + static_cast<uint64_t>(i) * 0x9e3779b97f4a7c15ULL;
+        seeds[i] = detail::Mix64(seed);
+    }
+
+    return seeds;
 }
+
+const auto kMinHashRowSeeds = MakeMinHashRowSeeds();
 
 uint64_t FeatureSalt(size_t window_size, size_t scale_index) {
     return kFeatureSalt ^ detail::Mix64(window_size + static_cast<uint64_t>(scale_index) * 0x9e3779b97f4a7c15ULL);
@@ -273,8 +281,15 @@ void Hasher::select_feature(uint64_t feature_hash) {
     last_minhash_feature_ = feature_hash;
     ++stats_.minhash_updates;
 
-    for ( size_t i = 0; i < minhash_values_.size(); ++i )
-        minhash_values_[i] = std::min(minhash_values_[i], MinHashCandidate(feature_hash, i));
+    auto* value = minhash_values_.data();
+    const auto* seed = kMinHashRowSeeds.data();
+    const auto* const end = value + minhash_values_.size();
+
+    for ( ; value != end; ++value, ++seed ) {
+        const auto candidate = detail::Mix64(feature_hash ^ *seed);
+        if ( candidate < *value )
+            *value = candidate;
+    }
 }
 
 std::optional<std::string> Hasher::finalize() const {
