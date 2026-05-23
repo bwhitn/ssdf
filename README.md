@@ -4,13 +4,18 @@ This directory contains a standalone prototype for the file-content similarity
 value emitted by the Zeek analyzer:
 
 ```text
-content_sim_alg=mh-rs-w64-cdc32-96-192-p128-k24-h18-hh64-b64url
+content_sim_alg=ssdf-alpha
 content_sim=<24 colon-separated 3-character base64url tokens>
 ```
 
 The implementation hashes content bytes only. It does not use file names, MIME
 types, sizes, protocol metadata, endpoint metadata, or exact file hashes as
 features.
+
+`ssdf-alpha` is intentionally not a compatibility-stable identifier. The exact
+recipe below documents the current alpha behavior; future incompatible alpha
+changes may keep this short log value until the first stable `ssdf-v1` recipe is
+chosen.
 
 ## Algorithm
 
@@ -20,7 +25,10 @@ The streaming hasher:
 2. Uses a row-split MinHash signature: rows 0-11 use 64-byte winnowed
    minimizers and rows 12-23 use sparse content-defined samples from the
    32-byte, 96-byte, and 192-byte lanes.
-3. Selects the winnowed lane with a 12-feature minimizer window.
+3. Selects the winnowed lane with a 12-feature minimizer window. Before a
+   64-byte rolling window enters the minimizer queue, it must pass a
+   content-defined 1/4 pre-gate. A selected minimizer must also pass a
+   content-defined 1/4 post-gate before updating the first 12 MinHash rows.
 4. Selects the sparse CDC lanes when the raw rolling feature passes a 1/128
    gate, then applies a splitmix64-style avalanche before MinHash.
 5. Emits the MinHash rows as row-scoped 18-bit tokens.
@@ -72,7 +80,7 @@ build/ssdf --benchmark [FILE ...]
 `ssdf FILE` prints:
 
 ```text
-mh-rs-w64-cdc32-96-192-p128-k24-h18-hh64-b64url <content_sim>
+ssdf-alpha <content_sim>
 ```
 
 `--minhash18x24` and `--minhash18x24-compare` are aliases for the current
@@ -108,7 +116,7 @@ The `base/files/content-sim` script extends `Files::Info` with
 emits:
 
 ```text
-content_sim_alg=mh-rs-w64-cdc32-96-192-p128-k24-h18-hh64-b64url
+content_sim_alg=ssdf-alpha
 content_sim=<24 colon-separated 3-character base64url tokens>
 ```
 

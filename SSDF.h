@@ -14,8 +14,7 @@ namespace ssdf {
 inline constexpr char SSDF_TOKEN_SEPARATOR = ':';
 inline constexpr size_t SSDF_MINHASH18X24_VALUES = 24;
 inline constexpr size_t SSDF_MINHASH_VALUES = SSDF_MINHASH18X24_VALUES;
-inline constexpr std::string_view SSDF_MINHASH18X24_ALG =
-    "mh-rs-w64-cdc32-96-192-p128-k24-h18-hh64-b64url";
+inline constexpr std::string_view SSDF_MINHASH18X24_ALG = "ssdf-alpha";
 
 struct Stats {
     uint64_t bytes_processed = 0;

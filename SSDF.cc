@@ -21,6 +21,8 @@ constexpr size_t kMinHashValues = SSDF_MINHASH_VALUES;
 constexpr uint64_t kFeatureSalt = 0x7a09e667f3bcc909ULL;
 constexpr uint64_t kMinHashSeed = 0x243f6a8885a308d3ULL;
 constexpr uint64_t kMinUsefulSelectedFeatures = 4;
+constexpr uint64_t kWinnowPreGateMask = 3;
+constexpr uint64_t kWinnowPostGateMask = 3;
 // Fixed public key for stable HighwayHash output. This is algorithm domain
 // separation, not a secret authentication key.
 constexpr uint64_t kHighwayHashKey[4] = {0x6d682d6c73682d76ULL, 0x312d62757a36342dULL, 0x7733322d6b33322dULL,
@@ -290,10 +292,14 @@ void Hasher::observe_cdc_window(uint64_t rolling_hash, uint64_t scale_salt) {
 }
 
 void Hasher::observe_winnow64_window() {
-    const auto feature_index = winnow64_feature_index_++;
-
     ++stats_.rolling_windows;
-    const auto feature_hash = detail::Mix64(rolling64_hash_ ^ winnow64_salt_);
+    const auto raw_feature = rolling64_hash_ ^ winnow64_salt_;
+
+    if ( (raw_feature & kWinnowPreGateMask) != 0 )
+        return;
+
+    const auto feature_index = winnow64_feature_index_++;
+    const auto feature_hash = detail::Mix64(raw_feature);
 
     while ( winnow64_size_ != 0 &&
             winnow64_queue_[winnow64_begin_].index + kActiveWinnowingWindow <= feature_index ) {
@@ -322,6 +328,10 @@ void Hasher::observe_winnow64_window() {
 
     has_winnow64_selected_index_ = true;
     winnow64_selected_index_ = minimizer.index;
+
+    if ( (minimizer.value & kWinnowPostGateMask) != 0 )
+        return;
+
     select_feature_range(minimizer.value, 0, kWinnowRows, has_last_winnow_feature_, last_winnow_feature_);
 }
 
