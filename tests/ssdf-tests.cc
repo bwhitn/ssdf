@@ -224,7 +224,7 @@ void TestMinimumUsefulInput() {
     auto too_small = MakeData(63, 0x1212121212121212ULL);
     CHECK(! HashWithChunk(too_small, 1));
 
-    auto enough = MakeData(512, 0x3434343434343434ULL);
+    auto enough = MakeData(8192, 0x3434343434343434ULL);
     auto result = HashWithChunk(enough, 1);
     REQUIRE(result);
     CHECK(result->size() == SSDF_MINHASH18X24_VALUES * 3 + (SSDF_MINHASH18X24_VALUES - 1));

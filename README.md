@@ -22,13 +22,14 @@ chosen.
 The streaming hasher:
 
 1. Maintains 64-byte and 192-byte rolling buzhash windows.
-2. Uses a row-split MinHash signature: rows 0-11 use 64-byte winnowed
-   minimizers and rows 12-23 use sparse content-defined samples from the
+2. Uses a row-split MinHash signature: rows 0-13 use 64-byte winnowed
+   minimizers and rows 14-23 use sparse content-defined samples from the
    192-byte lane.
-3. Selects the winnowed lane with a 12-feature minimizer window. Before a
-   64-byte rolling window enters the minimizer queue, it must pass a
-   content-defined 1/4 pre-gate. A selected minimizer must also pass a
-   content-defined 1/4 post-gate before updating the first 12 MinHash rows.
+3. Selects the winnowed lane with a 12-feature minimizer window over every
+   second full 64-byte rolling window. Before a 64-byte rolling window enters
+   the minimizer queue, it must pass a content-defined 1/4 pre-gate. A selected
+   minimizer must also pass a content-defined 1/4 post-gate before updating the
+   first 14 MinHash rows.
 4. Selects the sparse CDC lane when the raw rolling feature passes a 1/128
    gate, then applies a splitmix64-style avalanche before MinHash.
 5. Emits the MinHash rows as row-scoped 18-bit tokens.
@@ -94,9 +95,10 @@ similarity strings.
 `--chunk-test` hashes the same file with 1-byte, 7-byte, 64-byte, 4096-byte, and
 whole-file update calls and exits non-zero if the output differs.
 
-`--benchmark` reports bytes processed, elapsed seconds, MB/s, rolling-window
-count, selected-feature count, MinHash update count, and the final
-`content_sim`. It always benchmarks generated random and repeated data, and also
+`--benchmark` reports bytes processed, elapsed seconds, MB/s, MinHash update
+count, and the final `content_sim`. The default alpha build does not maintain
+the benchmark-only rolling-window or selected-feature counters, so those fields
+report `0`. It always benchmarks generated random and repeated data, and also
 benchmarks any file paths passed on the command line.
 
 ## Sample PCAP

@@ -21,7 +21,8 @@ namespace {
 constexpr size_t kMinUsefulBytes = 64;
 constexpr size_t kActiveWinnowingWindow = 12;
 constexpr size_t kWinnowWindowSize = 64;
-constexpr size_t kWinnowRows = SSDF_MINHASH_VALUES / 2;
+constexpr size_t kWinnowRows = 14;
+constexpr size_t kWinnowObserveStride = 2;
 constexpr uint64_t kCdcGateMask = 127;
 constexpr size_t kMinHashValues = SSDF_MINHASH_VALUES;
 constexpr uint64_t kFeatureSalt = 0x7a09e667f3bcc909ULL;
@@ -35,6 +36,7 @@ constexpr uint64_t kHighwayHashKey[4] = {0x6d682d6c73682d76ULL, 0x312d62757a3634
                                          0x6831382d68363834ULL};
 
 static_assert(kMinHashValues == SSDF_MINHASH_VALUES);
+static_assert(kWinnowRows > 0 && kWinnowRows < SSDF_MINHASH_VALUES);
 
 constexpr std::array<uint64_t, 256> kByteHashTable = {
     0x71f56d55bb21ddd7ULL, 0xf7dbbedc4cb6c316ULL, 0x9b323244a20947a6ULL, 0x76ae578f4cefa3dbULL,
@@ -227,7 +229,9 @@ void Hasher::update(const uint8_t* data, size_t len) {
         else {
             const auto old_hash = hash_history_[(offset - kWinnowWindowSize) & 0xffU];
             rolling64_hash_ = Rotl1(rolling64_hash_) ^ old_hash ^ byte_hash;
-            observe_winnow64_window();
+            const auto winnow_index = offset + 1 - kWinnowWindowSize;
+            if ( (winnow_index % kWinnowObserveStride) == 0 )
+                observe_winnow64_window();
         }
 
         rolling192_hash_ = Rotl1(rolling192_hash_) ^ byte_hash;
@@ -243,7 +247,9 @@ void Hasher::update(const uint8_t* data, size_t len) {
         hash_history_[offset & 0xffU] = byte_hash;
 
         rolling64_hash_ = Rotl1(rolling64_hash_) ^ old64_hash ^ byte_hash;
-        observe_winnow64_window();
+        const auto winnow_index = offset + 1 - kWinnowWindowSize;
+        if ( (winnow_index % kWinnowObserveStride) == 0 )
+            observe_winnow64_window();
 
         rolling192_hash_ = Rotl1(rolling192_hash_) ^ old192_hash ^ byte_hash;
         observe_cdc_window(rolling192_hash_, cdc192_salt_);
@@ -258,8 +264,6 @@ Hasher::Hasher() {
 }
 
 SSDF_ALWAYS_INLINE void Hasher::observe_cdc_window(uint64_t rolling_hash, uint64_t scale_salt) {
-    ++stats_.rolling_windows;
-
     const auto raw_feature = rolling_hash ^ scale_salt;
     if ( (raw_feature & kCdcGateMask) == 0 )
         select_feature_range(detail::Mix64(raw_feature), kWinnowRows, minhash_values_.size(),
@@ -267,7 +271,6 @@ SSDF_ALWAYS_INLINE void Hasher::observe_cdc_window(uint64_t rolling_hash, uint64
 }
 
 SSDF_ALWAYS_INLINE void Hasher::observe_winnow64_window() {
-    ++stats_.rolling_windows;
     const auto raw_feature = rolling64_hash_ ^ winnow64_salt_;
 
     if ( (raw_feature & kWinnowPreGateMask) != 0 )
@@ -312,8 +315,6 @@ SSDF_ALWAYS_INLINE void Hasher::observe_winnow64_window() {
 
 SSDF_ALWAYS_INLINE void Hasher::select_feature_range(uint64_t feature_hash, size_t row_begin, size_t row_end,
                                                      bool& has_last, uint64_t& last) {
-    ++stats_.selected_features;
-
     if ( has_last && last == feature_hash )
         return;
 
