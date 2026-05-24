@@ -21,15 +21,15 @@ chosen.
 
 The streaming hasher:
 
-1. Maintains 32-byte, 64-byte, 96-byte, and 192-byte rolling buzhash windows.
+1. Maintains 64-byte and 192-byte rolling buzhash windows.
 2. Uses a row-split MinHash signature: rows 0-11 use 64-byte winnowed
    minimizers and rows 12-23 use sparse content-defined samples from the
-   32-byte, 96-byte, and 192-byte lanes.
+   192-byte lane.
 3. Selects the winnowed lane with a 12-feature minimizer window. Before a
    64-byte rolling window enters the minimizer queue, it must pass a
    content-defined 1/4 pre-gate. A selected minimizer must also pass a
    content-defined 1/4 post-gate before updating the first 12 MinHash rows.
-4. Selects the sparse CDC lanes when the raw rolling feature passes a 1/128
+4. Selects the sparse CDC lane when the raw rolling feature passes a 1/128
    gate, then applies a splitmix64-style avalanche before MinHash.
 5. Emits the MinHash rows as row-scoped 18-bit tokens.
 6. Mixes the algorithm id, row index, and MinHash row value with HighwayHash
