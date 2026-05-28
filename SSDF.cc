@@ -3,15 +3,94 @@
 #include "SSDF.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
 #include "c/highwayhash.h"
 
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(SSDF_PROFILE_NOINLINE) && (defined(__GNUC__) || defined(__clang__))
+#define SSDF_ALWAYS_INLINE __attribute__((noinline))
+#elif defined(__GNUC__) || defined(__clang__)
 #define SSDF_ALWAYS_INLINE inline __attribute__((always_inline))
 #else
 #define SSDF_ALWAYS_INLINE inline
+#endif
+
+#ifndef SSDF_ENTROPY_STRIDE_MULTIPLIER
+#define SSDF_ENTROPY_STRIDE_MULTIPLIER 1
+#endif
+
+#ifndef SSDF_ENTROPY_MODE
+#define SSDF_ENTROPY_MODE 0
+#endif
+
+#ifdef SSDF_PROFILE_FIXED_SAMPLE_STRIDE
+static_assert(SSDF_PROFILE_FIXED_SAMPLE_STRIDE > 0, "SSDF_PROFILE_FIXED_SAMPLE_STRIDE must be positive");
+#endif
+
+#ifndef SSDF_PROFILE_SAMPLE_SCHEDULE
+#define SSDF_PROFILE_SAMPLE_SCHEDULE 0
+#endif
+
+#ifndef SSDF_PROFILE_WINNOW_ONLY
+#define SSDF_PROFILE_WINNOW_ONLY 0
+#endif
+
+#ifndef SSDF_PROFILE_CDC_ONLY
+#define SSDF_PROFILE_CDC_ONLY 0
+#endif
+
+#ifndef SSDF_PROFILE_CDC_WINDOW_SIZE
+#define SSDF_PROFILE_CDC_WINDOW_SIZE 192
+#endif
+
+#ifndef SSDF_PROFILE_CDC_GATE_MASK
+#define SSDF_PROFILE_CDC_GATE_MASK 127
+#endif
+
+#ifndef SSDF_PROFILE_CDC64_GATE_MASK
+#define SSDF_PROFILE_CDC64_GATE_MASK SSDF_PROFILE_CDC_GATE_MASK
+#endif
+
+#ifndef SSDF_PROFILE_CDC96_GATE_MASK
+#define SSDF_PROFILE_CDC96_GATE_MASK SSDF_PROFILE_CDC_GATE_MASK
+#endif
+
+#ifndef SSDF_PROFILE_CDC128_GATE_MASK
+#define SSDF_PROFILE_CDC128_GATE_MASK SSDF_PROFILE_CDC_GATE_MASK
+#endif
+
+#ifndef SSDF_PROFILE_CDC192_GATE_MASK
+#define SSDF_PROFILE_CDC192_GATE_MASK SSDF_PROFILE_CDC_GATE_MASK
+#endif
+
+#ifndef SSDF_PROFILE_CDC_MULTI_SIZE
+#define SSDF_PROFILE_CDC_MULTI_SIZE 0
+#endif
+
+#ifndef SSDF_PROFILE_CDC64_ROWS
+#define SSDF_PROFILE_CDC64_ROWS 8
+#endif
+
+#ifndef SSDF_PROFILE_CDC128_ROWS
+#define SSDF_PROFILE_CDC128_ROWS 8
+#endif
+
+#ifndef SSDF_PROFILE_CDC192_ROWS
+#define SSDF_PROFILE_CDC192_ROWS 8
+#endif
+
+#ifndef SSDF_PROFILE_CDC_ADJACENT_SAMPLES
+#define SSDF_PROFILE_CDC_ADJACENT_SAMPLES 0
+#endif
+
+#ifndef SSDF_PROFILE_OUTPUT_MODE
+#define SSDF_PROFILE_OUTPUT_MODE 0
+#endif
+
+#ifndef SSDF_PROFILE_HYBRID_STRICT_ROWS
+#define SSDF_PROFILE_HYBRID_STRICT_ROWS 16
 #endif
 
 namespace ssdf {
@@ -21,10 +100,41 @@ namespace {
 constexpr size_t kMinUsefulBytes = 64;
 constexpr size_t kActiveWinnowingWindow = 12;
 constexpr size_t kWinnowWindowSize = 64;
-constexpr size_t kWinnowRows = 14;
-constexpr size_t kWinnowObserveStride = 2;
-constexpr uint64_t kCdcGateMask = 127;
 constexpr size_t kMinHashValues = SSDF_MINHASH_VALUES;
+constexpr size_t kBottomKValues = SSDF_BOTTOMK_VALUES;
+constexpr size_t kCdcWindowSize = SSDF_PROFILE_CDC_WINDOW_SIZE;
+constexpr int kCdcMultiSize = SSDF_PROFILE_CDC_MULTI_SIZE;
+constexpr size_t kCdc64Rows = SSDF_PROFILE_CDC64_ROWS;
+constexpr size_t kCdc128Rows = SSDF_PROFILE_CDC128_ROWS;
+constexpr size_t kCdc192Rows = SSDF_PROFILE_CDC192_ROWS;
+constexpr size_t kCdc64RowBegin = 0;
+constexpr size_t kCdc64RowEnd = kCdc64Rows;
+constexpr size_t kCdc128RowBegin = kCdc64RowEnd;
+constexpr size_t kCdc128RowEnd = kCdc128RowBegin + kCdc128Rows;
+constexpr size_t kCdc192RowBegin = kCdc128RowEnd;
+constexpr size_t kCdc192RowEnd = kCdc192RowBegin + kCdc192Rows;
+constexpr size_t kMultiCdcMaxWindowSize = kCdc192Rows != 0 ? 192 : (kCdc128Rows != 0 ? 128 : 64);
+constexpr size_t kMaxCdcWindowSize = kCdcMultiSize == 0 ? kCdcWindowSize : (kCdcMultiSize == 2 ? kMultiCdcMaxWindowSize : 192);
+constexpr size_t kEntropyWindowSize = SSDF_ENTROPY_WINDOW_SIZE;
+constexpr size_t kMaxEntropySampleStride = 64;
+constexpr size_t kEntropyStrideRefreshBytes = 32;
+constexpr size_t kEntropySampleStrideMultiplier = SSDF_ENTROPY_STRIDE_MULTIPLIER;
+constexpr int kEntropyMode = SSDF_ENTROPY_MODE;
+constexpr bool kWinnowOnly = SSDF_PROFILE_WINNOW_ONLY != 0;
+constexpr bool kCdcOnly = SSDF_PROFILE_CDC_ONLY != 0;
+constexpr size_t kWinnowRows = kWinnowOnly ? SSDF_MINHASH_VALUES : (kCdcOnly ? 0 : 14);
+constexpr uint64_t kCdcGateMask = SSDF_PROFILE_CDC_GATE_MASK;
+constexpr uint64_t kCdc64GateMask = SSDF_PROFILE_CDC64_GATE_MASK;
+constexpr uint64_t kCdc96GateMask = SSDF_PROFILE_CDC96_GATE_MASK;
+constexpr uint64_t kCdc128GateMask = SSDF_PROFILE_CDC128_GATE_MASK;
+constexpr uint64_t kCdc192GateMask = SSDF_PROFILE_CDC192_GATE_MASK;
+constexpr int kCdcAdjacentSamples = SSDF_PROFILE_CDC_ADJACENT_SAMPLES;
+constexpr int kOutputMode = SSDF_PROFILE_OUTPUT_MODE;
+constexpr size_t kHybridStrictRows = SSDF_PROFILE_HYBRID_STRICT_ROWS;
+constexpr bool kTrackSecondMinHash = kOutputMode == 1;
+constexpr bool kTrackBottomK = kBottomKValues != 0;
+constexpr size_t kOutputTokenBits = SSDF_PROFILE_TOKEN_BITS;
+constexpr size_t kOutputTokenChars = kOutputTokenBits == 30 ? 5 : (kOutputTokenBits == 24 ? 4 : 3);
 constexpr uint64_t kFeatureSalt = 0x7a09e667f3bcc909ULL;
 constexpr uint64_t kMinHashSeed = 0x243f6a8885a308d3ULL;
 constexpr uint64_t kMinUsefulSelectedFeatures = 4;
@@ -36,7 +146,21 @@ constexpr uint64_t kHighwayHashKey[4] = {0x6d682d6c73682d76ULL, 0x312d62757a3634
                                          0x6831382d68363834ULL};
 
 static_assert(kMinHashValues == SSDF_MINHASH_VALUES);
-static_assert(kWinnowRows > 0 && kWinnowRows < SSDF_MINHASH_VALUES);
+static_assert(kWinnowRows <= SSDF_MINHASH_VALUES);
+static_assert(kWinnowRows > 0 || kCdcOnly);
+static_assert(! (kWinnowOnly && kCdcOnly));
+static_assert(kCdcWindowSize <= 192);
+static_assert(kCdcMultiSize >= 0 && kCdcMultiSize <= 2);
+static_assert(kCdcMultiSize == 0 || kCdcOnly);
+static_assert(kCdcMultiSize != 2 || kOutputMode == 3 || kCdc64Rows + kCdc128Rows + kCdc192Rows == kMinHashValues);
+static_assert(kCdc64Rows + kCdc128Rows + kCdc192Rows <= kMinHashValues);
+static_assert(kCdcAdjacentSamples >= 0 && kCdcAdjacentSamples <= 3);
+static_assert(kOutputMode >= 0 && kOutputMode <= 3);
+static_assert(kOutputMode != 2 || kBottomKValues != 0);
+static_assert(kOutputMode != 3 || kBottomKValues != 0);
+static_assert(kOutputMode != 3 || kHybridStrictRows <= kMinHashValues);
+static_assert(kOutputTokenBits == 18 || kOutputTokenBits == 24 || kOutputTokenBits == 30);
+static_assert(kEntropyMode >= 0 && kEntropyMode <= 6);
 
 constexpr std::array<uint64_t, 256> kByteHashTable = {
     0x71f56d55bb21ddd7ULL, 0xf7dbbedc4cb6c316ULL, 0x9b323244a20947a6ULL, 0x76ae578f4cefa3dbULL,
@@ -109,6 +233,15 @@ SSDF_ALWAYS_INLINE uint64_t Rotl1(uint64_t value) {
     return (value << 1U) | (value >> 63U);
 }
 
+SSDF_ALWAYS_INLINE uint64_t UpdateRollingWindowHash(uint64_t rolling_hash, uint64_t byte_hash,
+                                                    const std::array<uint64_t, 256>& history, uint64_t offset,
+                                                    size_t window_size) {
+    if ( offset < window_size )
+        return Rotl1(rolling_hash) ^ byte_hash;
+
+    return Rotl1(rolling_hash) ^ history[(offset - window_size) & 0xffU] ^ byte_hash;
+}
+
 class HighwayHashInput {
 public:
     void AppendBytes(const void* bytes, size_t len) {
@@ -162,6 +295,10 @@ uint64_t FeatureSalt(size_t window_size, size_t scale_index) {
     return kFeatureSalt ^ detail::Mix64(window_size + static_cast<uint64_t>(scale_index) * 0x9e3779b97f4a7c15ULL);
 }
 
+SSDF_ALWAYS_INLINE uint64_t CdcAdjacentSalt(uint64_t scale_salt, uint64_t direction) {
+    return scale_salt ^ detail::Mix64(0x6a09e667f3bcc909ULL + direction * 0x9e3779b97f4a7c15ULL);
+}
+
 SSDF_ALWAYS_INLINE size_t NextWinnowIndex(size_t index) {
     ++index;
     return index == kActiveWinnowingWindow ? 0 : index;
@@ -170,6 +307,84 @@ SSDF_ALWAYS_INLINE size_t NextWinnowIndex(size_t index) {
 SSDF_ALWAYS_INLINE size_t WinnowIndex(size_t begin, size_t offset) {
     auto index = begin + offset;
     return index >= kActiveWinnowingWindow ? index - kActiveWinnowingWindow : index;
+}
+
+const std::array<double, kEntropyWindowSize + 1>& CountLog2CountTable() {
+    static const auto table = [] {
+        std::array<double, kEntropyWindowSize + 1> values = {};
+        for ( size_t i = 1; i < values.size(); ++i )
+            values[i] = static_cast<double>(i) * std::log2(static_cast<double>(i));
+
+        return values;
+    }();
+
+    return table;
+}
+
+const std::array<uint32_t, kEntropyWindowSize + 1>& ScaledCountLog2CountTable() {
+    static constexpr double kEntropyScale = 1024.0;
+    static const auto table = [] {
+        std::array<uint32_t, kEntropyWindowSize + 1> values = {};
+        for ( size_t i = 1; i < values.size(); ++i )
+            values[i] = static_cast<uint32_t>(
+                std::llround(static_cast<double>(i) * std::log2(static_cast<double>(i)) * kEntropyScale));
+
+        return values;
+    }();
+
+    return table;
+}
+
+const std::array<double, kEntropyWindowSize * 2 + 1>& NibbleCountLog2CountTable() {
+    static const auto table = [] {
+        std::array<double, kEntropyWindowSize * 2 + 1> values = {};
+        for ( size_t i = 1; i < values.size(); ++i )
+            values[i] = static_cast<double>(i) * std::log2(static_cast<double>(i));
+
+        return values;
+    }();
+
+    return table;
+}
+
+SSDF_ALWAYS_INLINE size_t PopCount64(uint64_t value) {
+#if defined(__GNUC__) || defined(__clang__)
+    return static_cast<size_t>(__builtin_popcountll(value));
+#else
+    size_t count = 0;
+    while ( value != 0 ) {
+        value &= value - 1;
+        ++count;
+    }
+    return count;
+#endif
+}
+
+SSDF_ALWAYS_INLINE void MarkSeenByte(std::array<uint64_t, 4>& seen, uint8_t byte) {
+    seen[byte >> 6U] |= uint64_t{1} << (byte & 63U);
+}
+
+SSDF_ALWAYS_INLINE size_t CountSeenBytes(const std::array<uint64_t, 4>& seen) {
+    return PopCount64(seen[0]) + PopCount64(seen[1]) + PopCount64(seen[2]) + PopCount64(seen[3]);
+}
+
+size_t EntropyStride(double entropy) {
+    if ( entropy <= 0.0 )
+        return kMaxEntropySampleStride;
+
+    const auto stride = static_cast<size_t>(std::ceil(8.0 / entropy)) * kEntropySampleStrideMultiplier;
+    return std::clamp(stride, size_t{1}, kMaxEntropySampleStride);
+}
+
+size_t EntropyStrideFromScaled(uint32_t entropy_scaled) {
+    static constexpr uint32_t kEntropyScale = 1024;
+    if ( entropy_scaled == 0 )
+        return kMaxEntropySampleStride;
+
+    const auto numerator = 8U * kEntropyScale;
+    const auto stride = static_cast<size_t>((numerator + entropy_scaled - 1U) / entropy_scaled) *
+                        kEntropySampleStrideMultiplier;
+    return std::clamp(stride, size_t{1}, kMaxEntropySampleStride);
 }
 
 } // namespace
@@ -195,6 +410,35 @@ std::string MinHash18TokenForValue(std::string_view alg, size_t row_index, uint6
     return EncodeBase64Url18(static_cast<uint32_t>(final_hash & 0x3ffffU));
 }
 
+std::string MinHash24TokenForValue(std::string_view alg, size_t row_index, uint64_t value) {
+    HighwayHashInput input;
+    input.AppendAlg(alg);
+    input.AppendU64(static_cast<uint64_t>(row_index));
+    input.AppendU64(value);
+
+    const auto final_hash = input.Hash();
+    return EncodeBase64Url24(static_cast<uint32_t>(final_hash & 0xffffffU));
+}
+
+std::string MinHash30TokenForValue(std::string_view alg, size_t row_index, uint64_t value) {
+    HighwayHashInput input;
+    input.AppendAlg(alg);
+    input.AppendU64(static_cast<uint64_t>(row_index));
+    input.AppendU64(value);
+
+    const auto final_hash = input.Hash();
+    return EncodeBase64Url30(static_cast<uint32_t>(final_hash & 0x3fffffffU));
+}
+
+std::string MinHashProfileTokenForValue(std::string_view alg, size_t row_index, uint64_t value) {
+    if constexpr ( kOutputTokenBits == 30 )
+        return MinHash30TokenForValue(alg, row_index, value);
+    else if constexpr ( kOutputTokenBits == 24 )
+        return MinHash24TokenForValue(alg, row_index, value);
+    else
+        return MinHash18TokenForValue(alg, row_index, value);
+}
+
 } // namespace detail
 
 std::string EncodeBase64Url18(uint32_t value) {
@@ -209,65 +453,325 @@ std::string EncodeBase64Url18(uint32_t value) {
     return result;
 }
 
+std::string EncodeBase64Url24(uint32_t value) {
+    static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    value &= 0xffffffU;
+
+    std::string result;
+    result.resize(4);
+    result[0] = kAlphabet[(value >> 18U) & 0x3fU];
+    result[1] = kAlphabet[(value >> 12U) & 0x3fU];
+    result[2] = kAlphabet[(value >> 6U) & 0x3fU];
+    result[3] = kAlphabet[value & 0x3fU];
+    return result;
+}
+
+std::string EncodeBase64Url30(uint32_t value) {
+    static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    value &= 0x3fffffffU;
+
+    std::string result;
+    result.resize(5);
+    result[0] = kAlphabet[(value >> 24U) & 0x3fU];
+    result[1] = kAlphabet[(value >> 18U) & 0x3fU];
+    result[2] = kAlphabet[(value >> 12U) & 0x3fU];
+    result[3] = kAlphabet[(value >> 6U) & 0x3fU];
+    result[4] = kAlphabet[value & 0x3fU];
+    return result;
+}
+
 void Hasher::update(const uint8_t* data, size_t len) {
     if ( ! data && len != 0 )
         throw std::invalid_argument("Hasher::update received null data with non-zero length");
 
     size_t i = 0;
 
-    for ( ; i < len && stats_.bytes_processed < 192; ++i ) {
+    for ( ; i < len && stats_.bytes_processed < kMaxCdcWindowSize; ++i ) {
         const auto byte = data[i];
         const auto byte_hash = kByteHashTable[byte];
         const auto offset = stats_.bytes_processed++;
         hash_history_[offset & 0xffU] = byte_hash;
+        update_entropy_window(byte);
 
-        if ( offset < kWinnowWindowSize ) {
-            rolling64_hash_ = Rotl1(rolling64_hash_) ^ byte_hash;
-            if ( offset + 1 == kWinnowWindowSize )
-                observe_winnow64_window();
-        }
-        else {
-            const auto old_hash = hash_history_[(offset - kWinnowWindowSize) & 0xffU];
-            rolling64_hash_ = Rotl1(rolling64_hash_) ^ old_hash ^ byte_hash;
-            const auto winnow_index = offset + 1 - kWinnowWindowSize;
-            if ( (winnow_index % kWinnowObserveStride) == 0 )
-                observe_winnow64_window();
+        if constexpr ( ! kCdcOnly ) {
+            if ( offset < kWinnowWindowSize ) {
+                rolling64_hash_ = Rotl1(rolling64_hash_) ^ byte_hash;
+                if ( offset + 1 == kWinnowWindowSize && take_sample_slot(winnow_sample_countdown_) ) {
+                    observe_winnow64_window();
+                    reset_sample_slot(winnow_sample_countdown_);
+                }
+            }
+            else {
+                const auto old_hash = hash_history_[(offset - kWinnowWindowSize) & 0xffU];
+                rolling64_hash_ = Rotl1(rolling64_hash_) ^ old_hash ^ byte_hash;
+                if ( take_sample_slot(winnow_sample_countdown_) ) {
+                    observe_winnow64_window();
+                    reset_sample_slot(winnow_sample_countdown_);
+                }
+            }
         }
 
-        rolling192_hash_ = Rotl1(rolling192_hash_) ^ byte_hash;
-        if ( offset + 1 == 192 )
-            observe_cdc_window(rolling192_hash_, cdc192_salt_);
+        if constexpr ( ! kWinnowOnly ) {
+            if constexpr ( kCdcMultiSize == 1 ) {
+                const auto previous96_hash = rolling96_hash_;
+                const auto previous192_hash = rolling192_hash_;
+                rolling96_hash_ = UpdateRollingWindowHash(rolling96_hash_, byte_hash, hash_history_, offset, 96);
+                rolling192_hash_ = UpdateRollingWindowHash(rolling192_hash_, byte_hash, hash_history_, offset, 192);
+                if ( offset + 1 >= 96 ) {
+                    observe_pending_cdc_next(rolling96_hash_, cdc96_salt_, 0, kMinHashValues / 2,
+                                             has_last_cdc96_feature_, last_cdc96_feature_, pending_cdc96_next_);
+                    if ( take_sample_slot(cdc96_sample_countdown_) ) {
+                        observe_cdc_window(rolling96_hash_, offset + 1 > 96 ? previous96_hash : 0, cdc96_salt_,
+                                           kCdc96GateMask, 0, kMinHashValues / 2, has_last_cdc96_feature_,
+                                           last_cdc96_feature_, pending_cdc96_next_);
+                        reset_sample_slot(cdc96_sample_countdown_);
+                    }
+                }
+                if ( offset + 1 == 192 ) {
+                    observe_pending_cdc_next(rolling192_hash_, cdc192_salt_, kMinHashValues / 2, kMinHashValues,
+                                             has_last_cdc_feature_, last_cdc_feature_, pending_cdc192_next_);
+                    if ( take_sample_slot(cdc_sample_countdown_) ) {
+                        observe_cdc_window(rolling192_hash_, offset + 1 > 192 ? previous192_hash : 0, cdc192_salt_,
+                                           kCdc192GateMask, kMinHashValues / 2, kMinHashValues,
+                                           has_last_cdc_feature_, last_cdc_feature_, pending_cdc192_next_);
+                        reset_sample_slot(cdc_sample_countdown_);
+                    }
+                }
+            }
+            else if constexpr ( kCdcMultiSize == 2 ) {
+                const auto previous64_hash = rolling64_hash_;
+                const auto previous128_hash = rolling128_hash_;
+                const auto previous192_hash = rolling192_hash_;
+                if constexpr ( kCdc64Rows != 0 )
+                    rolling64_hash_ = UpdateRollingWindowHash(rolling64_hash_, byte_hash, hash_history_, offset, 64);
+                if constexpr ( kCdc128Rows != 0 )
+                    rolling128_hash_ =
+                        UpdateRollingWindowHash(rolling128_hash_, byte_hash, hash_history_, offset, 128);
+                if constexpr ( kCdc192Rows != 0 )
+                    rolling192_hash_ =
+                        UpdateRollingWindowHash(rolling192_hash_, byte_hash, hash_history_, offset, 192);
+                if constexpr ( kCdc64Rows != 0 ) {
+                    if ( offset + 1 >= 64 ) {
+                        observe_pending_cdc_next(rolling64_hash_, cdc64_salt_, kCdc64RowBegin, kCdc64RowEnd,
+                                                 has_last_cdc64_feature_, last_cdc64_feature_, pending_cdc64_next_);
+                        if ( take_sample_slot(cdc64_sample_countdown_) ) {
+                            observe_cdc_window(rolling64_hash_, offset + 1 > 64 ? previous64_hash : 0,
+                                               cdc64_salt_, kCdc64GateMask, kCdc64RowBegin, kCdc64RowEnd,
+                                               has_last_cdc64_feature_, last_cdc64_feature_, pending_cdc64_next_);
+                            reset_sample_slot(cdc64_sample_countdown_);
+                        }
+                    }
+                }
+                if constexpr ( kCdc128Rows != 0 ) {
+                    if ( offset + 1 >= 128 ) {
+                        observe_pending_cdc_next(rolling128_hash_, cdc128_salt_, kCdc128RowBegin, kCdc128RowEnd,
+                                                 has_last_cdc128_feature_, last_cdc128_feature_,
+                                                 pending_cdc128_next_);
+                        if ( take_sample_slot(cdc128_sample_countdown_) ) {
+                            observe_cdc_window(rolling128_hash_, offset + 1 > 128 ? previous128_hash : 0,
+                                               cdc128_salt_, kCdc128GateMask, kCdc128RowBegin, kCdc128RowEnd,
+                                               has_last_cdc128_feature_, last_cdc128_feature_,
+                                               pending_cdc128_next_);
+                            reset_sample_slot(cdc128_sample_countdown_);
+                        }
+                    }
+                }
+                if constexpr ( kCdc192Rows != 0 ) {
+                    if ( offset + 1 == 192 ) {
+                        observe_pending_cdc_next(rolling192_hash_, cdc192_salt_, kCdc192RowBegin, kCdc192RowEnd,
+                                                 has_last_cdc_feature_, last_cdc_feature_, pending_cdc192_next_);
+                        if ( take_sample_slot(cdc_sample_countdown_) ) {
+                            observe_cdc_window(rolling192_hash_, offset + 1 > 192 ? previous192_hash : 0,
+                                               cdc192_salt_, kCdc192GateMask, kCdc192RowBegin, kCdc192RowEnd,
+                                               has_last_cdc_feature_, last_cdc_feature_, pending_cdc192_next_);
+                            reset_sample_slot(cdc_sample_countdown_);
+                        }
+                    }
+                }
+            }
+            else {
+                const auto previous192_hash = rolling192_hash_;
+                rolling192_hash_ =
+                    UpdateRollingWindowHash(rolling192_hash_, byte_hash, hash_history_, offset, kCdcWindowSize);
+                if ( offset + 1 == kCdcWindowSize ) {
+                    observe_pending_cdc_next(rolling192_hash_, cdc192_salt_, kWinnowRows, minhash_values_.size(),
+                                             has_last_cdc_feature_, last_cdc_feature_, pending_cdc192_next_);
+                    if ( take_sample_slot(cdc_sample_countdown_) ) {
+                        observe_cdc_window(rolling192_hash_, offset + 1 > kCdcWindowSize ? previous192_hash : 0,
+                                           cdc192_salt_, kCdc192GateMask, kWinnowRows, minhash_values_.size(),
+                                           has_last_cdc_feature_, last_cdc_feature_, pending_cdc192_next_);
+                        reset_sample_slot(cdc_sample_countdown_);
+                    }
+                }
+            }
+        }
     }
 
     for ( ; i < len; ++i ) {
-        const auto byte_hash = kByteHashTable[data[i]];
+        const auto byte = data[i];
+        const auto byte_hash = kByteHashTable[byte];
         const auto offset = stats_.bytes_processed++;
-        const auto old64_hash = hash_history_[(offset - kWinnowWindowSize) & 0xffU];
-        const auto old192_hash = hash_history_[(offset - 192) & 0xffU];
         hash_history_[offset & 0xffU] = byte_hash;
+        update_entropy_window(byte);
 
-        rolling64_hash_ = Rotl1(rolling64_hash_) ^ old64_hash ^ byte_hash;
-        const auto winnow_index = offset + 1 - kWinnowWindowSize;
-        if ( (winnow_index % kWinnowObserveStride) == 0 )
-            observe_winnow64_window();
+        if constexpr ( ! kCdcOnly ) {
+            rolling64_hash_ =
+                UpdateRollingWindowHash(rolling64_hash_, byte_hash, hash_history_, offset, kWinnowWindowSize);
+            if ( take_sample_slot(winnow_sample_countdown_) ) {
+                observe_winnow64_window();
+                reset_sample_slot(winnow_sample_countdown_);
+            }
+        }
 
-        rolling192_hash_ = Rotl1(rolling192_hash_) ^ old192_hash ^ byte_hash;
-        observe_cdc_window(rolling192_hash_, cdc192_salt_);
+        if constexpr ( ! kWinnowOnly ) {
+            if constexpr ( kCdcMultiSize == 1 ) {
+                const auto previous96_hash = rolling96_hash_;
+                const auto previous192_hash = rolling192_hash_;
+                rolling96_hash_ = UpdateRollingWindowHash(rolling96_hash_, byte_hash, hash_history_, offset, 96);
+                rolling192_hash_ = UpdateRollingWindowHash(rolling192_hash_, byte_hash, hash_history_, offset, 192);
+                observe_pending_cdc_next(rolling96_hash_, cdc96_salt_, 0, kMinHashValues / 2,
+                                         has_last_cdc96_feature_, last_cdc96_feature_, pending_cdc96_next_);
+                if ( take_sample_slot(cdc96_sample_countdown_) ) {
+                    observe_cdc_window(rolling96_hash_, previous96_hash, cdc96_salt_, kCdc96GateMask, 0,
+                                       kMinHashValues / 2, has_last_cdc96_feature_, last_cdc96_feature_,
+                                       pending_cdc96_next_);
+                    reset_sample_slot(cdc96_sample_countdown_);
+                }
+                observe_pending_cdc_next(rolling192_hash_, cdc192_salt_, kMinHashValues / 2, kMinHashValues,
+                                         has_last_cdc_feature_, last_cdc_feature_, pending_cdc192_next_);
+                if ( take_sample_slot(cdc_sample_countdown_) ) {
+                    observe_cdc_window(rolling192_hash_, previous192_hash, cdc192_salt_, kCdc192GateMask,
+                                       kMinHashValues / 2, kMinHashValues, has_last_cdc_feature_,
+                                       last_cdc_feature_, pending_cdc192_next_);
+                    reset_sample_slot(cdc_sample_countdown_);
+                }
+            }
+            else if constexpr ( kCdcMultiSize == 2 ) {
+                const auto previous64_hash = rolling64_hash_;
+                const auto previous128_hash = rolling128_hash_;
+                const auto previous192_hash = rolling192_hash_;
+                if constexpr ( kCdc64Rows != 0 )
+                    rolling64_hash_ = UpdateRollingWindowHash(rolling64_hash_, byte_hash, hash_history_, offset, 64);
+                if constexpr ( kCdc128Rows != 0 )
+                    rolling128_hash_ =
+                        UpdateRollingWindowHash(rolling128_hash_, byte_hash, hash_history_, offset, 128);
+                if constexpr ( kCdc192Rows != 0 )
+                    rolling192_hash_ =
+                        UpdateRollingWindowHash(rolling192_hash_, byte_hash, hash_history_, offset, 192);
+                if constexpr ( kCdc64Rows != 0 ) {
+                    observe_pending_cdc_next(rolling64_hash_, cdc64_salt_, kCdc64RowBegin, kCdc64RowEnd,
+                                             has_last_cdc64_feature_, last_cdc64_feature_, pending_cdc64_next_);
+                    if ( take_sample_slot(cdc64_sample_countdown_) ) {
+                        observe_cdc_window(rolling64_hash_, previous64_hash, cdc64_salt_, kCdc64GateMask,
+                                           kCdc64RowBegin, kCdc64RowEnd, has_last_cdc64_feature_,
+                                           last_cdc64_feature_, pending_cdc64_next_);
+                        reset_sample_slot(cdc64_sample_countdown_);
+                    }
+                }
+                if constexpr ( kCdc128Rows != 0 ) {
+                    observe_pending_cdc_next(rolling128_hash_, cdc128_salt_, kCdc128RowBegin, kCdc128RowEnd,
+                                             has_last_cdc128_feature_, last_cdc128_feature_,
+                                             pending_cdc128_next_);
+                    if ( take_sample_slot(cdc128_sample_countdown_) ) {
+                        observe_cdc_window(rolling128_hash_, previous128_hash, cdc128_salt_, kCdc128GateMask,
+                                           kCdc128RowBegin, kCdc128RowEnd, has_last_cdc128_feature_,
+                                           last_cdc128_feature_, pending_cdc128_next_);
+                        reset_sample_slot(cdc128_sample_countdown_);
+                    }
+                }
+                if constexpr ( kCdc192Rows != 0 ) {
+                    observe_pending_cdc_next(rolling192_hash_, cdc192_salt_, kCdc192RowBegin, kCdc192RowEnd,
+                                             has_last_cdc_feature_, last_cdc_feature_, pending_cdc192_next_);
+                    if ( take_sample_slot(cdc_sample_countdown_) ) {
+                        observe_cdc_window(rolling192_hash_, previous192_hash, cdc192_salt_, kCdc192GateMask,
+                                           kCdc192RowBegin, kCdc192RowEnd, has_last_cdc_feature_,
+                                           last_cdc_feature_, pending_cdc192_next_);
+                        reset_sample_slot(cdc_sample_countdown_);
+                    }
+                }
+            }
+            else {
+                const auto previous192_hash = rolling192_hash_;
+                rolling192_hash_ =
+                    UpdateRollingWindowHash(rolling192_hash_, byte_hash, hash_history_, offset, kCdcWindowSize);
+                observe_pending_cdc_next(rolling192_hash_, cdc192_salt_, kWinnowRows, minhash_values_.size(),
+                                         has_last_cdc_feature_, last_cdc_feature_, pending_cdc192_next_);
+                if ( take_sample_slot(cdc_sample_countdown_) ) {
+                    observe_cdc_window(rolling192_hash_, previous192_hash, cdc192_salt_, kCdc192GateMask,
+                                       kWinnowRows, minhash_values_.size(), has_last_cdc_feature_,
+                                       last_cdc_feature_, pending_cdc192_next_);
+                    reset_sample_slot(cdc_sample_countdown_);
+                }
+            }
+        }
     }
 }
 
 Hasher::Hasher() {
     std::fill(minhash_values_.begin(), minhash_values_.end(), std::numeric_limits<uint64_t>::max());
+    std::fill(minhash_second_values_.begin(), minhash_second_values_.end(), std::numeric_limits<uint64_t>::max());
+    std::fill(bottomk_values_.begin(), bottomk_values_.end(), std::numeric_limits<uint64_t>::max());
 
     winnow64_salt_ = FeatureSalt(64, 1);
-    cdc192_salt_ = FeatureSalt(192, 3);
+    cdc64_salt_ = FeatureSalt(64, 4);
+    cdc96_salt_ = FeatureSalt(96, 5);
+    cdc128_salt_ = FeatureSalt(128, 6);
+    cdc192_salt_ = FeatureSalt(kCdcMultiSize == 0 ? kCdcWindowSize : 192, 3);
+#ifdef SSDF_PROFILE_FIXED_SAMPLE_STRIDE
+    entropy_sample_stride_ = std::clamp<size_t>(SSDF_PROFILE_FIXED_SAMPLE_STRIDE, 1, kMaxEntropySampleStride);
+#elif SSDF_PROFILE_SAMPLE_SCHEDULE != 0
+    entropy_sample_stride_ = 1;
+#endif
 }
 
-SSDF_ALWAYS_INLINE void Hasher::observe_cdc_window(uint64_t rolling_hash, uint64_t scale_salt) {
+SSDF_ALWAYS_INLINE void Hasher::observe_pending_cdc_next(uint64_t rolling_hash, uint64_t scale_salt, size_t row_begin,
+                                                         size_t row_end, bool& has_last, uint64_t& last,
+                                                         bool& pending_next) {
+    if constexpr ( (kCdcAdjacentSamples & 2) == 0 ) {
+        (void)rolling_hash;
+        (void)scale_salt;
+        (void)row_begin;
+        (void)row_end;
+        (void)has_last;
+        (void)last;
+        (void)pending_next;
+    }
+    else {
+        if ( ! pending_next )
+            return;
+
+        pending_next = false;
+        if ( row_begin == row_end )
+            return;
+
+        select_feature_range(detail::Mix64(rolling_hash ^ CdcAdjacentSalt(scale_salt, 2)), row_begin, row_end,
+                             has_last, last);
+    }
+}
+
+SSDF_ALWAYS_INLINE void Hasher::observe_cdc_window(uint64_t rolling_hash, uint64_t previous_rolling_hash,
+                                                   uint64_t scale_salt, uint64_t gate_mask, size_t row_begin,
+                                                   size_t row_end, bool& has_last, uint64_t& last,
+                                                   bool& pending_next) {
+    if ( row_begin == row_end )
+        return;
+
     const auto raw_feature = rolling_hash ^ scale_salt;
-    if ( (raw_feature & kCdcGateMask) == 0 )
-        select_feature_range(detail::Mix64(raw_feature), kWinnowRows, minhash_values_.size(),
-                             has_last_cdc_feature_, last_cdc_feature_);
+    if ( (raw_feature & gate_mask) != 0 )
+        return;
+
+    if constexpr ( (kCdcAdjacentSamples & 1) != 0 ) {
+        if ( previous_rolling_hash != 0 )
+            select_feature_range(detail::Mix64(previous_rolling_hash ^ CdcAdjacentSalt(scale_salt, 1)), row_begin,
+                                 row_end, has_last, last);
+    }
+
+    select_feature_range(detail::Mix64(raw_feature), row_begin, row_end, has_last, last);
+
+    if constexpr ( (kCdcAdjacentSamples & 2) != 0 )
+        pending_next = true;
+    else
+        (void)pending_next;
 }
 
 SSDF_ALWAYS_INLINE void Hasher::observe_winnow64_window() {
@@ -321,31 +825,345 @@ SSDF_ALWAYS_INLINE void Hasher::select_feature_range(uint64_t feature_hash, size
     has_last = true;
     last = feature_hash;
     ++stats_.minhash_updates;
+    observe_bottomk(feature_hash);
 
     auto* value = minhash_values_.data() + row_begin;
+    auto* second_value = minhash_second_values_.data() + row_begin;
     const auto* seed = kMinHashRowSeeds.data() + row_begin;
     const auto* const end = minhash_values_.data() + row_end;
 
-    for ( ; value != end; ++value, ++seed ) {
+    for ( ; value != end; ++value, ++second_value, ++seed ) {
         const auto candidate = detail::Mix64(feature_hash ^ *seed);
-        if ( candidate < *value )
+        if ( candidate < *value ) {
+            if constexpr ( kTrackSecondMinHash )
+                *second_value = *value;
+
             *value = candidate;
+        }
+        else if constexpr ( kTrackSecondMinHash ) {
+            if ( candidate != *value && candidate < *second_value )
+                *second_value = candidate;
+        }
     }
 }
 
+SSDF_ALWAYS_INLINE void Hasher::observe_bottomk(uint64_t feature_hash) {
+    if constexpr ( ! kTrackBottomK ) {
+        (void)feature_hash;
+    }
+    else {
+        const auto candidate = detail::Mix64(feature_hash ^ 0x9e3779b97f4a7c15ULL);
+        size_t replace = 0;
+        auto worst = bottomk_values_[0];
+
+        for ( size_t i = 0; i < bottomk_values_.size(); ++i ) {
+            if ( bottomk_values_[i] == candidate )
+                return;
+
+            if ( bottomk_values_[i] > worst ) {
+                worst = bottomk_values_[i];
+                replace = i;
+            }
+        }
+
+        if ( candidate < worst )
+            bottomk_values_[replace] = candidate;
+    }
+}
+
+SSDF_ALWAYS_INLINE void Hasher::update_entropy_window(uint8_t byte) {
+#if defined(SSDF_PROFILE_FIXED_SAMPLE_STRIDE) || SSDF_PROFILE_SAMPLE_SCHEDULE != 0
+    (void)byte;
+    return;
+#endif
+
+#if SSDF_ENTROPY_MODE == 6
+    const auto& count_log2_count = ScaledCountLog2CountTable();
+    const auto add_entropy_byte = [&](uint8_t value) {
+        const auto old_count = entropy_counts_[value]++;
+        entropy_count_term_sum_scaled_ += count_log2_count[old_count + 1] - count_log2_count[old_count];
+    };
+    const auto remove_entropy_byte = [&](uint8_t value) {
+        const auto old_count = entropy_counts_[value]--;
+        entropy_count_term_sum_scaled_ -= count_log2_count[old_count] - count_log2_count[old_count - 1];
+    };
+#endif
+
+    if ( entropy_window_size_ < kEntropyWindowSize ) {
+        entropy_window_[entropy_window_size_++] = byte;
+#if SSDF_ENTROPY_MODE == 6
+        add_entropy_byte(byte);
+#endif
+        entropy_window_next_ = entropy_window_size_ % kEntropyWindowSize;
+        if ( entropy_window_size_ == kEntropyWindowSize )
+            refresh_entropy_sample_stride();
+
+        return;
+    }
+
+#if SSDF_ENTROPY_MODE == 6
+    remove_entropy_byte(entropy_window_[entropy_window_next_]);
+    add_entropy_byte(byte);
+#endif
+    entropy_window_[entropy_window_next_] = byte;
+    entropy_window_next_ = (entropy_window_next_ + 1) % kEntropyWindowSize;
+
+    ++entropy_bytes_since_stride_refresh_;
+    if ( entropy_bytes_since_stride_refresh_ >= kEntropyStrideRefreshBytes )
+        refresh_entropy_sample_stride();
+}
+
+SSDF_ALWAYS_INLINE bool Hasher::take_sample_slot(size_t& countdown) {
+    if ( countdown != 0 ) {
+        --countdown;
+        return false;
+    }
+
+    return true;
+}
+
+SSDF_ALWAYS_INLINE void Hasher::reset_sample_slot(size_t& countdown) const {
+#if SSDF_PROFILE_SAMPLE_SCHEDULE == 1
+    const auto stride = std::min<size_t>(8, 1 + stats_.minhash_updates / SSDF_MINHASH_VALUES);
+    countdown = stride - 1;
+#elif SSDF_PROFILE_SAMPLE_SCHEDULE == 2
+    const auto stride = std::min<size_t>(12, 1 + stats_.minhash_updates / (SSDF_MINHASH_VALUES * 2));
+    countdown = stride - 1;
+#elif SSDF_PROFILE_SAMPLE_SCHEDULE == 3
+    const auto stride = std::min<size_t>(16, 1 + stats_.minhash_updates / (SSDF_MINHASH_VALUES * 4));
+    countdown = stride - 1;
+#elif SSDF_PROFILE_SAMPLE_SCHEDULE == 4
+    const auto stride = stats_.minhash_updates < SSDF_MINHASH_VALUES ? size_t{1} : size_t{2};
+    countdown = stride - 1;
+#elif SSDF_PROFILE_SAMPLE_SCHEDULE == 5
+    const auto stride = stats_.minhash_updates < SSDF_MINHASH_VALUES * 2 ? size_t{1} : size_t{2};
+    countdown = stride - 1;
+#elif SSDF_PROFILE_SAMPLE_SCHEDULE == 6
+    const auto stride = stats_.bytes_processed < 4096 ? size_t{1} :
+                        stats_.bytes_processed < 65536 ? size_t{2} :
+                        stats_.bytes_processed < 1048576 ? size_t{4} :
+                        size_t{8};
+    countdown = stride - 1;
+#elif SSDF_PROFILE_SAMPLE_SCHEDULE == 7
+    const auto stride = std::min<size_t>(4, 1 + stats_.minhash_updates / SSDF_MINHASH_VALUES);
+    countdown = stride - 1;
+#elif SSDF_PROFILE_SAMPLE_SCHEDULE == 8
+    const auto stride = std::min<size_t>(6, 1 + stats_.minhash_updates / SSDF_MINHASH_VALUES);
+    countdown = stride - 1;
+#elif SSDF_PROFILE_SAMPLE_SCHEDULE == 9
+    const auto stride = std::min<size_t>(12, 1 + stats_.minhash_updates / SSDF_MINHASH_VALUES);
+    countdown = stride - 1;
+#elif SSDF_PROFILE_SAMPLE_SCHEDULE == 10
+    const auto stride = std::min<size_t>(16, 1 + stats_.minhash_updates / SSDF_MINHASH_VALUES);
+    countdown = stride - 1;
+#elif SSDF_PROFILE_SAMPLE_SCHEDULE == 11
+    const auto stride = std::min<size_t>(64, 1 + stats_.minhash_updates / SSDF_MINHASH_VALUES);
+    countdown = stride - 1;
+#else
+    countdown = entropy_sample_stride_ - 1;
+#endif
+}
+
+SSDF_ALWAYS_INLINE void Hasher::refresh_entropy_sample_stride() {
+    entropy_bytes_since_stride_refresh_ = 0;
+
+    if ( entropy_window_size_ < kEntropyWindowSize ) {
+        entropy_sample_stride_ = kMaxEntropySampleStride;
+        return;
+    }
+
+    static const double kLog2EntropyWindowSize = std::log2(static_cast<double>(kEntropyWindowSize));
+
+    if constexpr ( kEntropyMode == 0 ) {
+        std::array<uint8_t, 256> counts = {};
+        for ( auto byte : entropy_window_ )
+            ++counts[byte];
+
+        const auto& count_log2_count = CountLog2CountTable();
+        double count_term_sum = 0.0;
+        for ( auto count : counts )
+            count_term_sum += count_log2_count[count];
+
+        const auto entropy = kLog2EntropyWindowSize - count_term_sum / static_cast<double>(kEntropyWindowSize);
+        entropy_sample_stride_ = EntropyStride(entropy);
+    }
+    else if constexpr ( kEntropyMode == 1 ) {
+        std::array<uint64_t, 4> seen = {};
+        for ( auto byte : entropy_window_ )
+            MarkSeenByte(seen, byte);
+
+        const auto unique = CountSeenBytes(seen);
+        const auto entropy = unique == 0 ? 0.0 : std::min(kLog2EntropyWindowSize, std::log2(static_cast<double>(unique)));
+        entropy_sample_stride_ = EntropyStride(entropy);
+    }
+    else if constexpr ( kEntropyMode == 2 ) {
+        std::array<uint8_t, 16> counts = {};
+        for ( auto byte : entropy_window_ ) {
+            ++counts[byte >> 4U];
+            ++counts[byte & 0x0fU];
+        }
+
+        const auto& count_log2_count = NibbleCountLog2CountTable();
+        double count_term_sum = 0.0;
+        for ( auto count : counts )
+            count_term_sum += count_log2_count[count];
+
+        constexpr auto kNibbleCount = static_cast<double>(kEntropyWindowSize * 2);
+        static const double kLog2NibbleCount = std::log2(kNibbleCount);
+        const auto nibble_entropy = kLog2NibbleCount - count_term_sum / kNibbleCount;
+        const auto entropy = std::min(kLog2EntropyWindowSize, nibble_entropy * 2.0);
+        entropy_sample_stride_ = EntropyStride(entropy);
+    }
+    else if constexpr ( kEntropyMode == 3 ) {
+        size_t changes = 0;
+        auto previous = entropy_window_[entropy_window_next_];
+
+        for ( size_t i = 1; i < kEntropyWindowSize; ++i ) {
+            const auto current = entropy_window_[(entropy_window_next_ + i) % kEntropyWindowSize];
+            if ( current != previous )
+                ++changes;
+
+            previous = current;
+        }
+
+        const auto entropy = kLog2EntropyWindowSize *
+                             (static_cast<double>(changes) / static_cast<double>(kEntropyWindowSize - 1));
+        entropy_sample_stride_ = EntropyStride(entropy);
+    }
+    else if constexpr ( kEntropyMode == 4 ) {
+        constexpr size_t kSampledEntropyStep = 4;
+        constexpr size_t kSampledEntropyCount = kEntropyWindowSize / kSampledEntropyStep;
+        static const double kSampleEntropyScale =
+            kLog2EntropyWindowSize / std::log2(static_cast<double>(kSampledEntropyCount));
+
+        std::array<uint64_t, 4> seen = {};
+        for ( size_t i = 0; i < kEntropyWindowSize; i += kSampledEntropyStep )
+            MarkSeenByte(seen, entropy_window_[(entropy_window_next_ + i) % kEntropyWindowSize]);
+
+        const auto unique = CountSeenBytes(seen);
+        const auto entropy = unique == 0 ? 0.0 :
+                                           std::min(kLog2EntropyWindowSize,
+                                                    std::log2(static_cast<double>(unique)) * kSampleEntropyScale);
+        entropy_sample_stride_ = EntropyStride(entropy);
+    }
+    else if constexpr ( kEntropyMode == 5 ) {
+        std::array<uint8_t, 256> counts = {};
+        for ( auto byte : entropy_window_ )
+            ++counts[byte];
+
+        const auto& count_log2_count = ScaledCountLog2CountTable();
+        uint32_t count_term_sum = 0;
+        for ( auto count : counts )
+            count_term_sum += count_log2_count[count];
+
+        constexpr uint32_t kEntropyScale = 1024;
+        static const auto kLog2EntropyWindowSizeScaled =
+            static_cast<uint32_t>(std::llround(kLog2EntropyWindowSize * kEntropyScale));
+        const auto entropy_scaled =
+            kLog2EntropyWindowSizeScaled -
+            static_cast<uint32_t>((count_term_sum + kEntropyWindowSize / 2) / kEntropyWindowSize);
+        entropy_sample_stride_ = EntropyStrideFromScaled(entropy_scaled);
+    }
+#if SSDF_ENTROPY_MODE == 6
+    else if constexpr ( kEntropyMode == 6 ) {
+        constexpr uint32_t kEntropyScale = 1024;
+        static const auto kLog2EntropyWindowSizeScaled =
+            static_cast<uint32_t>(std::llround(kLog2EntropyWindowSize * kEntropyScale));
+        const auto entropy_scaled =
+            kLog2EntropyWindowSizeScaled -
+            static_cast<uint32_t>((entropy_count_term_sum_scaled_ + kEntropyWindowSize / 2) /
+                                  kEntropyWindowSize);
+        entropy_sample_stride_ = EntropyStrideFromScaled(entropy_scaled);
+    }
+#endif
+}
+
 std::optional<std::string> Hasher::finalize() const {
-    const auto signature = minhash_signature();
-    if ( ! signature )
+    if ( stats_.bytes_processed < kMinUsefulBytes )
         return std::nullopt;
 
-    std::string result;
-    result.reserve(SSDF_MINHASH18X24_VALUES * 3 + (SSDF_MINHASH18X24_VALUES - 1));
+    if ( stats_.minhash_updates < kMinUsefulSelectedFeatures )
+        return std::nullopt;
 
-    for ( size_t row = 0; row < SSDF_MINHASH18X24_VALUES; ++row ) {
-        if ( row != 0 )
+    const auto empty = std::numeric_limits<uint64_t>::max();
+
+    const auto minhash_ready = [&](size_t row_count) {
+        return std::none_of(minhash_values_.begin(), minhash_values_.begin() + row_count,
+                            [empty](uint64_t value) { return value == empty; });
+    };
+
+    const auto second_ready = [&](size_t row_count) {
+        return std::none_of(minhash_second_values_.begin(), minhash_second_values_.begin() + row_count,
+                            [empty](uint64_t value) { return value == empty; });
+    };
+
+    const auto bottomk_ready = [&]() {
+        if constexpr ( ! kTrackBottomK )
+            return false;
+        else
+            return std::none_of(bottomk_values_.begin(), bottomk_values_.end(),
+                                [empty](uint64_t value) { return value == empty; });
+    };
+
+    size_t output_tokens = SSDF_MINHASH18X24_VALUES;
+    if constexpr ( kOutputMode == 1 )
+        output_tokens = SSDF_MINHASH18X24_VALUES * 2;
+    else if constexpr ( kOutputMode == 2 )
+        output_tokens = kBottomKValues;
+    else if constexpr ( kOutputMode == 3 )
+        output_tokens = kHybridStrictRows + kBottomKValues;
+
+    if constexpr ( kOutputMode == 0 ) {
+        if ( ! minhash_ready(SSDF_MINHASH18X24_VALUES) )
+            return std::nullopt;
+    }
+    else if constexpr ( kOutputMode == 1 ) {
+        if ( ! minhash_ready(SSDF_MINHASH18X24_VALUES) || ! second_ready(SSDF_MINHASH18X24_VALUES) )
+            return std::nullopt;
+    }
+    else if constexpr ( kOutputMode == 2 ) {
+        if ( ! bottomk_ready() )
+            return std::nullopt;
+    }
+    else if constexpr ( kOutputMode == 3 ) {
+        if ( ! minhash_ready(kHybridStrictRows) || ! bottomk_ready() )
+            return std::nullopt;
+    }
+
+    std::string result;
+    result.reserve(output_tokens * kOutputTokenChars + (output_tokens - 1));
+
+    const auto append_token = [&](size_t row_scope, uint64_t value) {
+        if ( ! result.empty() )
             result.push_back(SSDF_TOKEN_SEPARATOR);
 
-        result += detail::MinHash18TokenForValue(SSDF_MINHASH18X24_ALG, row, (*signature)[row]);
+        result += detail::MinHashProfileTokenForValue(SSDF_MINHASH18X24_ALG, row_scope, value);
+    };
+
+    if constexpr ( kOutputMode == 0 ) {
+        for ( size_t row = 0; row < SSDF_MINHASH18X24_VALUES; ++row )
+            append_token(row, minhash_values_[row]);
+    }
+    else if constexpr ( kOutputMode == 1 ) {
+        for ( size_t row = 0; row < SSDF_MINHASH18X24_VALUES; ++row ) {
+            append_token(row * 2, minhash_values_[row]);
+            append_token(row * 2 + 1, minhash_second_values_[row]);
+        }
+    }
+    else if constexpr ( kOutputMode == 2 ) {
+        auto values = bottomk_values_;
+        std::sort(values.begin(), values.end());
+        for ( auto value : values )
+            append_token(0x2000, value);
+    }
+    else if constexpr ( kOutputMode == 3 ) {
+        for ( size_t row = 0; row < kHybridStrictRows; ++row )
+            append_token(row, minhash_values_[row]);
+
+        auto values = bottomk_values_;
+        std::sort(values.begin(), values.end());
+        for ( auto value : values )
+            append_token(0x2000, value);
     }
 
     return result;

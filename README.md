@@ -25,17 +25,25 @@ The streaming hasher:
 2. Uses a row-split MinHash signature: rows 0-13 use 64-byte winnowed
    minimizers and rows 14-23 use sparse content-defined samples from the
    192-byte lane.
-3. Selects the winnowed lane with a 12-feature minimizer window over every
-   second full 64-byte rolling window. Before a 64-byte rolling window enters
-   the minimizer queue, it must pass a content-defined 1/4 pre-gate. A selected
+3. Uses a local entropy-driven streaming sample stride for the rolling feature
+   lanes. The hasher maintains byte counts for the last 64 bytes and estimates
+   Shannon entropy for that window. The sample stride is `ceil(8 / entropy)`,
+   capped at 64 for zero-entropy windows. The stride is refreshed when the first
+   full entropy window is available, then after each additional 32 bytes. This
+   samples high-entropy regions more densely and low-entropy regions more
+   sparsely without needing to know file size ahead of time.
+4. Selects the winnowed lane with a 12-feature minimizer window over sampled
+   full 64-byte rolling windows. Before a 64-byte rolling window enters the
+   minimizer queue, it must pass a content-defined 1/4 pre-gate. A selected
    minimizer must also pass a content-defined 1/4 post-gate before updating the
    first 14 MinHash rows.
-4. Selects the sparse CDC lane when the raw rolling feature passes a 1/128
-   gate, then applies a splitmix64-style avalanche before MinHash.
-5. Emits the MinHash rows as row-scoped 18-bit tokens.
-6. Mixes the algorithm id, row index, and MinHash row value with HighwayHash
+5. Selects the sparse CDC lane from sampled full 192-byte rolling windows when
+   the raw rolling feature passes a 1/128 gate, then applies a splitmix64-style
+   avalanche before MinHash.
+6. Emits the MinHash rows as row-scoped 18-bit tokens.
+7. Mixes the algorithm id, row index, and MinHash row value with HighwayHash
    and a fixed public algorithm key.
-7. Truncates each row hash to 18 bits and encodes it as 3 unpadded RFC4648
+8. Truncates each row hash to 18 bits and encodes it as 3 unpadded RFC4648
    base64url characters.
 
 Base64url encoding is implemented directly for the fixed 18-bit to 3-character

@@ -74,6 +74,17 @@ std::optional<std::array<uint64_t, SSDF_MINHASH_VALUES>> MinHashWithChunk(const 
     return hasher.minhash_signature();
 }
 
+ssdf::Stats StatsWithChunk(const std::vector<uint8_t>& data, size_t chunk_size) {
+    Hasher hasher;
+
+    for ( size_t offset = 0; offset < data.size(); offset += chunk_size ) {
+        const auto n = std::min(chunk_size, data.size() - offset);
+        hasher.update(data.data() + offset, n);
+    }
+
+    return hasher.stats();
+}
+
 std::vector<std::string> SplitTokens(const std::string& value) {
     std::vector<std::string> tokens;
     size_t start = 0;
@@ -183,6 +194,21 @@ void TestMinHashRows() {
     CHECK(matching_rows == SSDF_MINHASH_VALUES);
 }
 
+void TestEntropySampleStride() {
+    auto data = MakeData(262144, 0x6262626262626262ULL);
+    auto byte_chunks = StatsWithChunk(data, 1);
+    auto whole_file = StatsWithChunk(data, data.size());
+
+    CHECK(byte_chunks.minhash_updates == whole_file.minhash_updates);
+
+    std::vector<uint8_t> low_entropy(data.size(), static_cast<uint8_t>('A'));
+    auto high_entropy_stats = StatsWithChunk(data, 4096);
+    auto low_entropy_stats = StatsWithChunk(low_entropy, 4096);
+
+    REQUIRE(high_entropy_stats.minhash_updates > 0);
+    CHECK(high_entropy_stats.minhash_updates > low_entropy_stats.minhash_updates);
+}
+
 void TestSensitivity() {
     auto data = MakeData(65536, 0x4444444444444444ULL);
     auto same = data;
@@ -239,6 +265,7 @@ int main() {
     TestStreamingStability();
     TestDeterminism();
     TestMinHashRows();
+    TestEntropySampleStride();
     TestSensitivity();
     TestRowIndexScoping();
     TestMinimumUsefulInput();
